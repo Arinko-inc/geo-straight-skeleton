@@ -10,7 +10,7 @@
 mod common;
 use common::*;
 use proptest::prelude::*;
-use skeleton_rs::Skeleton;
+use geo_straight_skeleton::Skeleton;
 
 fn sample_cover(rings: &[Vec<P2>], sk: &Skeleton, seed: u64, samples: usize) -> Vec<String> {
     let rs = clean_rings(rings);
@@ -67,6 +67,7 @@ fn corpus_properties() {
         let n_pts: usize = case.rings.iter().map(|r| r.len()).sum();
         let samples = if n_pts > 1000 { 100 } else { 300 };
         problems.extend(sample_cover(&case.rings, &sk, 0x9e37_79b9_7f4a_7c15 ^ n_pts as u64, samples));
+        problems.extend(check_offsets(&case.rings, &sk));
         for p in problems.iter().take(6) {
             failures.push(format!("{} (CGAL: {}): {p}", case.name, case.cgal_status));
         }
@@ -85,12 +86,56 @@ fn star_polygon(angles: &[f64], radii: &[f64]) -> Vec<P2> {
     a.iter().zip(radii.iter().cycle()).map(|(&t, &r)| [r * t.cos(), r * t.sin()]).collect()
 }
 
+/// Area of the part of the faces with time >= d (each face's time is the distance to its line).
+fn superlevel_area(sk: &Skeleton, d: f64) -> f64 {
+    let mut total = 0.0;
+    for face in &sk.faces {
+        let vs: Vec<[f64; 3]> = face.vertices.iter().map(|&i| sk.vertices[i]).collect();
+        if vs.len() < 3 {
+            continue;
+        }
+        // clip the polygon (x, y, t) against t >= d (t is linear on the face)
+        let mut out: Vec<P2> = Vec::new();
+        for i in 0..vs.len() {
+            let (p, q) = (vs[i], vs[(i + 1) % vs.len()]);
+            let (ip, iq) = (p[2] >= d, q[2] >= d);
+            if ip {
+                out.push([p[0], p[1]]);
+            }
+            if ip != iq {
+                let f = (d - p[2]) / (q[2] - p[2]);
+                out.push([p[0] + (q[0] - p[0]) * f, p[1] + (q[1] - p[1]) * f]);
+            }
+        }
+        if out.len() >= 3 {
+            total += area(&out);
+        }
+    }
+    total
+}
+
+fn check_offsets(rings: &[Vec<P2>], sk: &Skeleton) -> Vec<String> {
+    let tmax = sk.vertices.iter().map(|v| v[2]).fold(0.0, f64::max);
+    let scale = bbox_diag(rings);
+    let mut problems = Vec::new();
+    for frac in [0.013, 0.1, 0.37, 0.5, 0.77, 0.99] {
+        let d = tmax * frac;
+        let got: f64 = sk.offset(d).iter().map(|r| area(r)).sum();
+        let want = superlevel_area(sk, d);
+        if (got - want).abs() > 1e-9 * scale * scale {
+            problems.push(format!("offset {d}: rings have area {got}, faces above it {want}"));
+        }
+    }
+    problems
+}
+
 fn check_random(rings: Vec<Vec<P2>>) -> Result<(), TestCaseError> {
     let sk = Skeleton::build(&rings).map_err(|e| TestCaseError::fail(format!("build failed: {e}")))?;
     let n: usize = rings.iter().map(|r| r.len()).sum();
     prop_assert_eq!(sk.faces.len(), n);
     let mut problems = check_properties(&rings, &sk);
     problems.extend(sample_cover(&rings, &sk, n as u64 * 7919, 60));
+    problems.extend(check_offsets(&rings, &sk));
     prop_assert!(problems.is_empty(), "{:?}\n{:?}", problems, rings);
     Ok(())
 }
@@ -218,6 +263,33 @@ fn strip(seed: u64, segs: usize, seg_len: f64, width: f64, curv: f64) -> Vec<P2>
     right
 }
 
+/// A strip of exactly constant width: offsets along the chord normals of a random centreline
+/// (both sides nearly anti-parallel everywhere, so the whole centreline collapses at once).
+fn constant_strip(seed: u64, segs: usize, seg_len: f64, half: f64, curv: f64) -> Vec<P2> {
+    let mut rng = Rng(seed | 1);
+    let mut c = vec![[0.0, 0.0]];
+    let (mut ang, mut dang) = (0.0f64, 0.0f64);
+    for _ in 0..segs {
+        dang = 0.7 * dang + curv * (rng.next() - 0.5);
+        ang += dang;
+        let p = c[c.len() - 1];
+        c.push([p[0] + seg_len * ang.cos(), p[1] + seg_len * ang.sin()]);
+    }
+    let (mut left, mut right) = (Vec::new(), Vec::new());
+    for i in 0..c.len() {
+        let a = c[i.saturating_sub(1)];
+        let b = c[(i + 1).min(c.len() - 1)];
+        let d = [b[0] - a[0], b[1] - a[1]];
+        let l = d[0].hypot(d[1]);
+        let n = [-d[1] / l * half, d[0] / l * half];
+        left.push([c[i][0] + n[0], c[i][1] + n[1]]);
+        right.push([c[i][0] - n[0], c[i][1] - n[1]]);
+    }
+    left.reverse();
+    right.extend(left);
+    right
+}
+
 /// Insert collinear points on some edges.
 fn with_collinear(ring: &[P2], seed: u64, every: usize) -> Vec<P2> {
     let mut rng = Rng(seed | 1);
@@ -241,11 +313,12 @@ fn transform(rings: &[Vec<P2>], scale: f64, dx: f64, dy: f64) -> Vec<Vec<P2>> {
 /// Valid inputs only: some generated shapes are rejected (rounding can make them touch).
 fn check_if_valid(rings: Vec<Vec<P2>>) -> Result<(), TestCaseError> {
     match Skeleton::build(&rings) {
-        Err(skeleton_rs::SkeletonError::Numerical) => Err(TestCaseError::fail(format!("numerical failure\n{rings:?}"))),
+        Err(geo_straight_skeleton::SkeletonError::Numerical) => Err(TestCaseError::fail(format!("numerical failure\n{rings:?}"))),
         Err(_) => Ok(()),
         Ok(sk) => {
             let mut problems = check_properties(&rings, &sk);
             problems.extend(sample_cover(&rings, &sk, 99, 60));
+            problems.extend(check_offsets(&rings, &sk));
             prop_assert!(problems.is_empty(), "{:?}\n{:?}", problems, rings);
             Ok(())
         }
@@ -268,6 +341,15 @@ proptest! {
                    far in any::<bool>()) {
         let mut r = strip(seed, segs, 4.0, width, curv);
         if collinear > 0 { r = with_collinear(&r, seed ^ 7, collinear); }
+        let rings = if far { transform(&[r], 1.0, -30_000.0, 120_000.0) } else { vec![r] };
+        check_if_valid(rings)?;
+    }
+
+    #[test]
+    #[ignore = "open issue: exactly constant-width strips, see tests/known-diffs.md"]
+    fn constant_width_strips(seed in any::<u64>(), segs in 2usize..400, half in prop::sample::select(vec![1.0, 1.5, 2.5]),
+                             curv in prop::sample::select(vec![0.0, 0.01, 0.03, 0.1]), far in any::<bool>()) {
+        let r = constant_strip(seed, segs, 2.0, half, curv);
         let rings = if far { transform(&[r], 1.0, -30_000.0, 120_000.0) } else { vec![r] };
         check_if_valid(rings)?;
     }

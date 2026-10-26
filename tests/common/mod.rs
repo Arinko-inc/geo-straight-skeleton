@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use serde_json::Value;
-use skeleton_rs::Skeleton;
+use geo_straight_skeleton::Skeleton;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 

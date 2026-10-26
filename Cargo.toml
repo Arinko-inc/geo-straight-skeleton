@@ -1,10 +1,36 @@
 [package]
-name = "skeleton_rs"
+name = "geo-straight-skeleton"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+authors = ["Yukihiro Hemmi <y.hemmi@arinko.jp>"]
+description = "Straight skeleton of polygons with holes in f64, pure Rust: robust against simultaneous events, checked against CGAL"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["straight-skeleton", "skeleton", "polygon", "geometry", "gis"]
+categories = ["algorithms", "science::geo", "mathematics", "graphics"]
+include = [
+    "/src/**",
+    "/examples/**",
+    "/tests/*.rs",
+    "/tests/common/**",
+    "/tests/known-diffs.md",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/LICENSE-MIT",
+    "/LICENSE-APACHE",
+]
+
+[features]
+## Conversions from and to `geo-types` (`Skeleton::from_polygon`, `Skeleton::arcs_multi_line_string`).
+geo-types = ["dep:geo-types"]
 
 [dependencies]
+geo-types = { version = "0.7", optional = true }
 
 [dev-dependencies]
 serde_json = "1"
 proptest = "1"
+
+[package.metadata.docs.rs]
+all-features = true

@@ -3,8 +3,11 @@
 
 mod engine;
 mod faces;
+#[cfg(feature = "geo-types")]
+mod geo;
 mod geom;
 mod input;
+mod offset;
 mod queue;
 
 use std::fmt;
@@ -94,7 +97,12 @@ impl Skeleton {
     pub fn build(rings: &[Vec<[f64; 2]>]) -> Result<Skeleton, SkeletonError> {
         let prep = input::prepare(rings)?;
         let eng = engine::Engine::new(&prep.rings);
-        let out = eng.run(&prep.touch_groups).map_err(|_| SkeletonError::Numerical)?;
+        let out = eng.run(&prep.touch_groups).map_err(|e| {
+            if cfg!(debug_assertions) && std::env::var_os("SK_TRACE").is_some() {
+                eprintln!("engine failed: {e:?}");
+            }
+            SkeletonError::Numerical
+        })?;
         // computed edge -> (start node, end node)
         let mut edge_nodes: Vec<(u32, u32)> = Vec::new();
         let mut comp_edges: Vec<input::CompEdge> = Vec::new();
@@ -114,8 +122,12 @@ impl Skeleton {
                 canon[v] = g[0] as u32;
             }
         }
-        let node_faces =
-            faces::assemble(&out.nodes, &out.arcs, &edge_nodes, &canon).map_err(|_| SkeletonError::Numerical)?;
+        let node_faces = faces::assemble(&out.nodes, &out.arcs, &edge_nodes, &canon).map_err(|f| {
+            if cfg!(debug_assertions) && std::env::var_os("SK_TRACE").is_some() {
+                eprintln!("face {f} could not be assembled");
+            }
+            SkeletonError::Numerical
+        })?;
 
         let n_pts = prep.points.len();
         let mut vertices: Vec<[f64; 3]> = prep.points.iter().map(|p| [p[0], p[1], 0.0]).collect();

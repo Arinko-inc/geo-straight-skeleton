@@ -18,7 +18,7 @@
 
 mod common;
 use common::*;
-use skeleton_rs::Skeleton;
+use geo_straight_skeleton::Skeleton;
 
 struct Report {
     name: String,

@@ -25,6 +25,8 @@ use crate::queue::EventQueue;
 
 /// Position tolerance (normalised units: the larger side of the bounding box is 1).
 pub(crate) const EPS_P: f64 = 1e-12;
+/// An inconsistent new vertex whose rays are closer than this (radians) is closed as a sliver.
+const SLIVER: f64 = 1e-3;
 /// Largest collection radius an inconsistent surgery may widen to.
 const EPS_P_MAX: f64 = 1e-7;
 /// Time tolerance used when merging skeleton nodes.
@@ -677,6 +679,13 @@ impl Engine {
         ss < sq && sq < se
     }
 
+    /// Sector of the vertex that would join pass `a`'s incoming piece to pass `b`'s outgoing one.
+    fn pair_sector(&self, a: &Pass, b: &Pass) -> f64 {
+        let d_in = self.line_of(a.in_p).d;
+        let d_out = if b.split { self.line_of(b.in_p).d } else { self.line_of(b.out_p).d };
+        ccw_angle(d_out, neg(d_in))
+    }
+
     /// Collect everything at `p` at time `t` within `radius`, and work out how to reconnect it.
     /// Nothing is modified (apart from marks).
     fn plan(&mut self, t: f64, p: V2, forced: &[u32], forced_piece: u32, radius: f64) -> Option<Plan> {
@@ -863,6 +872,13 @@ impl Engine {
             if !lone_in.is_empty() {
                 consistent = false;
             }
+            // In a collision every ray lies inside the other passes' sectors, so the sector of a
+            // new vertex joining two different passes fits inside both of them.
+            for &(ia, ob, tied) in &pairs {
+                if ia != ob && !tied && self.pair_sector(&passes[ia], &passes[ob]) > passes[ia].sigma.min(passes[ob].sigma) + 1e-9 {
+                    consistent = false;
+                }
+            }
             // inconsistent configurations: pair whatever is left in order
             for (i, o) in lone_in.into_iter().zip(stack) {
                 pairs.push((rays[i].pass, rays[o].pass, false));
@@ -938,6 +954,10 @@ impl Engine {
             let geo = ccw_angle(d_out, neg(d_in));
             let sigma = if tied {
                 if geo < PI { geo } else { 0.0 }
+            } else if ia != ob && geo > a.sigma.min(b.sigma) + 1e-9 && TAU - geo < SLIVER {
+                // an inverted sliver: the two pieces already overlap by a hair (an event next to
+                // this one was resolved a rounding error late); close it like a zero-width sector
+                0.0
             } else if ia == ob {
                 let mut sg = geo;
                 for cand in [geo - TAU, geo + TAU] {
@@ -1099,6 +1119,22 @@ impl Engine {
             self.drain_zips();
         }
         if !self.alive_verts.is_empty() {
+            if trace() {
+                for &v in &self.alive_verts {
+                    let vv = &self.verts[v as usize];
+                    eprintln!(
+                        "alive v{v}: lines {}->{} sigma {} pos {:?} t0 {} vel {:?} prev v{} next v{}",
+                        self.pieces[vv.in_p as usize].line,
+                        self.pieces[vv.out_p as usize].line,
+                        vv.sigma,
+                        vv.pos,
+                        vv.t0,
+                        vv.vel,
+                        self.pieces[vv.in_p as usize].start,
+                        self.pieces[vv.out_p as usize].end
+                    );
+                }
+            }
             return Err(EngineError::Unfinished);
         }
         let _ = self.queue.len();
