@@ -1,3 +1,9 @@
+import { readdirSync, readFileSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
+
+const inputsDir = join(dirname(fileURLToPath(import.meta.url)), 'inputs');
+
 // Input generators for the oracle corpus. Every generator is deterministic (fixed seeds).
 // A case is {name, group, note?, rings}. Rings carry no closing point unless the case says so;
 // orientation is whatever the generator produces (gen.mjs fixes it before calling CGAL).
@@ -341,6 +347,12 @@ export function allCases() {
   add('holes', 'hole_in_L', [[[0, 0], [10, 0], [10, 4], [4, 4], [4, 10], [0, 10]], [[1, 1], [1, 3], [3, 3], [3, 1]]]);
   add('holes', 'holes_many_small', [rect(0, 0, 50, 20), ...(() => { const hs = []; for (let i = 0; i < 6; i++) for (let j = 0; j < 2; j++) hs.push(regular(5, 1.5, 0.2 * i + j, 5 + 8 * i, 5 + 10 * j).reverse()); return hs; })()]);
 
+  // --- rings touching at a vertex (weakly simple) ---
+  add('touch', 'touch_hole_outer', [[[0, 0], [5, 0], [10, 0], [10, 10], [0, 10]], [[5, 0], [3, 4], [7, 4]]], 'triangular hole touching the outer ring at (5, 0)');
+  add('touch', 'touch_hole_corner', [rect(0, 0, 10, 10), [[0, 0], [2, 5], [5, 2]].reverse()], 'hole touching an outer corner');
+  add('touch', 'touch_two_holes', [rect(0, 0, 20, 10), [[2, 2], [2, 8], [10, 5]].reverse().reverse(), [[10, 5], [18, 8], [18, 2]]], 'two holes sharing a vertex');
+  add('touch', 'touch_three_holes', [rect(0, 0, 20, 20), [[10, 10], [4, 14], [4, 6]], [[10, 10], [16, 6], [16, 14]], [[10, 10], [6, 16], [14, 16]]], 'three holes meeting at one point');
+
   // --- random simple polygons ---
   for (const [n, seed] of [[8, 11], [10, 12], [12, 13], [15, 14], [20, 15], [25, 16], [30, 17], [40, 18], [50, 19], [60, 20], [80, 21], [100, 22], [150, 23], [200, 24]]) {
     add('random', `random_star_${n}_s${seed}`, [randomStar(n, seed)]);
@@ -370,6 +382,12 @@ export function allCases() {
   add('large', 'road_2000', [road(1000, 75, 2, 3, 0.03, { widthJitter: 0.05 })], 'road strip with 2,002 vertices');
   add('large', 'noisy_5000', [noisyCircle(5000, 76, 100, 0.02)]);
   add('large', 'random_star_5000', [randomStar(5000, 77, 0.5, 1, 100)]);
+
+  // --- real data: road-network faces from OpenStreetMap (see oracle/inputs/README.md)
+  for (const f of readdirSync(inputsDir).filter((f) => f.endsWith('.json')).sort()) {
+    const rings = JSON.parse(readFileSync(join(inputsDir, f), 'utf8'));
+    add('osm', f.replace(/\.json$/, ''), rings, 'OpenStreetMap road-network face (ODbL), plane rectangular zone VII');
+  }
 
   return cases;
 }

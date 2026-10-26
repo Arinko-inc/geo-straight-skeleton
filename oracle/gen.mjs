@@ -121,41 +121,22 @@ function refineVertex(lines) {
   return z;
 }
 
-function processCase(c) {
-  const t0 = Date.now();
-  const f = frame(c.rings.map(cleanRing));
-  // snap the input as given (closing points, duplicates and orientation are kept as the case wrote them)
-  const rings = c.rings.map((r) => r.map((p) => toGlobal(f, toLocal(f, p))));
-  // CGAL wants: no closing point, no duplicates, outer CCW, holes CW
-  const local = rings.map((r) => cleanRing(r).map((p) => toLocal(f, p))).map((r, i) => {
-    const a = area(r);
-    return (i === 0 ? a < 0 : a > 0) ? r.slice().reverse() : r;
-  });
-  const out = { name: c.name, group: c.group, ...(c.note ? { note: c.note } : {}), rings };
-  if (local.some((r) => r.length < 3)) {
-    out.cgal = { status: 'skipped', message: 'ring with fewer than 3 points' };
-    return out;
-  }
+function solve(local, f) {
   const res = runCgal(local);
   const cg = { status: res.status, ms: res.ms !== undefined ? Math.round(res.ms * 1000) / 1000 : undefined };
   if (res.message) cg.message = res.message;
   if (res.status === 'ok') {
     const flat = local.flat();
     const nIn = flat.length;
-    // lines per face, in local coordinates: face k of ring r is the edge whose endpoints are input vertices
+    // the line of each face: CGAL lists a face as [end, ...skeleton..., start] of its input edge
     const faceLine = res.polygons.map((poly) => {
-      // the base edge: two consecutive (cyclic) input vertices, listed as [end, ..., start]
-      const m = poly.length;
-      for (let i = 0; i < m; i++) {
-        const a = poly[(i + m - 1) % m], b = poly[i];
-        // CGAL lists the face as [end, ...skeleton..., start]: start is last, end is first
-        if (a < nIn && b < nIn && i === 0) {
-          const p = flat[a], q = flat[b];
-          const dx = q[0] - p[0], dy = q[1] - p[1];
-          const l = Math.hypot(dx, dy);
-          const n = [-dy / l, dx / l];
-          return { n, c: n[0] * p[0] + n[1] * p[1], start: a, end: b };
-        }
+      const a = poly[poly.length - 1], b = poly[0];
+      if (a < nIn && b < nIn) {
+        const p = flat[a], q = flat[b];
+        const dx = q[0] - p[0], dy = q[1] - p[1];
+        const l = Math.hypot(dx, dy);
+        const n = [-dy / l, dx / l];
+        return { n, c: n[0] * p[0] + n[1] * p[1] };
       }
       return null;
     });
@@ -182,9 +163,71 @@ function processCase(c) {
     cg.polygons = res.polygons;
     cg.unrefined = refined.filter((r) => !r).length;
   }
+  return cg;
+}
+
+// Pull every hole vertex that coincides with a vertex of another ring into its hole (along the
+// bisector of the hole's angle there) by 2^-20 local units. Returns null when nothing touches.
+function perturbTouches(local) {
+  const key = (p) => `${p[0]},${p[1]}`;
+  const count = new Map();
+  local.forEach((r, ri) => r.forEach((p) => {
+    const k = key(p);
+    if (!count.has(k)) count.set(k, new Set());
+    count.get(k).add(ri);
+  }));
+  const delta = 2 ** -20;
+  let moved = 0;
+  const rings = local.map((r, ri) => {
+    if (ri === 0) return r.slice();
+    return r.map((p, i) => {
+      if (count.get(key(p)).size < 2) return p;
+      const a = r[(i + r.length - 1) % r.length], b = r[(i + 1) % r.length];
+      const u1 = [a[0] - p[0], a[1] - p[1]], u2 = [b[0] - p[0], b[1] - p[1]];
+      const l1 = Math.hypot(...u1), l2 = Math.hypot(...u2);
+      let bis = [u1[0] / l1 + u2[0] / l2, u1[1] / l1 + u2[1] / l2];
+      const turn = (p[0] - a[0]) * (b[1] - p[1]) - (p[1] - a[1]) * (b[0] - p[0]);
+      let lb = Math.hypot(...bis);
+      if (lb < 1e-9) { bis = [b[1] - a[1], -(b[0] - a[0])]; lb = Math.hypot(...bis); }
+      // holes are clockwise: a right turn (turn < 0) means the hole's angle there is convex
+      const sgn = turn < 0 || lb < 1e-9 ? 1 : -1;
+      moved++;
+      return [Math.round((p[0] + (sgn * delta * bis[0]) / lb) * G) / G, Math.round((p[1] + (sgn * delta * bis[1]) / lb) * G) / G];
+    });
+  });
+  return moved ? { rings, delta, moved } : null;
+}
+
+function processCase(c) {
+  const t0 = Date.now();
+  const f = frame(c.rings.map(cleanRing));
+  // snap the input as given (closing points, duplicates and orientation are kept as the case wrote them)
+  const rings = c.rings.map((r) => r.map((p) => toGlobal(f, toLocal(f, p))));
+  // CGAL wants: no closing point, no duplicates, outer CCW, holes CW
+  const local = rings.map((r) => cleanRing(r).map((p) => toLocal(f, p))).map((r, i) => {
+    const a = area(r);
+    return (i === 0 ? a < 0 : a > 0) ? r.slice().reverse() : r;
+  });
+  const out = { name: c.name, group: c.group, ...(c.note ? { note: c.note } : {}), rings };
+  if (local.some((r) => r.length < 3)) {
+    out.cgal = { status: 'skipped', message: 'ring with fewer than 3 points' };
+    return out;
+  }
+  const cg = solve(local, f);
   out.cgal = cg;
   out.frame = { cx: f.cx, cy: f.cy, s: f.s };
-  console.log(`${c.name.padEnd(28)} ${String(rings.reduce((a, r) => a + r.length, 0)).padStart(5)} pts  cgal=${cg.status}${cg.unrefined ? ` unrefined=${cg.unrefined}` : ''}${cg.message ? ` (${cg.message.slice(0, 80)})` : ''}  ${Date.now() - t0} ms`);
+  // Rings touching at a vertex: CGAL's wrapper rejects them, so also solve a copy in which every
+  // touching hole vertex is pulled into its hole by `delta` (the tests compare with a tolerance
+  // scaled to it).
+  const pert = perturbTouches(local);
+  if (pert) {
+    const pc = solve(pert.rings, f);
+    pc.delta = pert.delta * f.s;
+    pc.moved = pert.moved;
+    out.cgal_perturbed = pc;
+    cg.message = (cg.message ? cg.message + '; ' : '') + `perturbed copy: ${pc.status}`;
+  }
+  console.log(`${c.name.padEnd(28)} ${String(rings.reduce((a, r) => a + r.length, 0)).padStart(5)} pts  cgal=${cg.status}${out.cgal_perturbed ? `/${out.cgal_perturbed.status}` : ''}${cg.unrefined ? ` unrefined=${cg.unrefined}` : ''}${cg.message ? ` (${cg.message.slice(0, 80)})` : ''}  ${Date.now() - t0} ms`);
   return out;
 }
 
