@@ -25,6 +25,8 @@ use crate::queue::EventQueue;
 
 /// Position tolerance (normalised units: the larger side of the bounding box is 1).
 pub(crate) const EPS_P: f64 = 1e-12;
+/// Largest collection radius an inconsistent surgery may widen to.
+const EPS_P_MAX: f64 = 1e-7;
 /// Time tolerance used when merging skeleton nodes.
 pub(crate) const EPS_T: f64 = 1e-12;
 /// Interior sectors narrower than this are treated as zero-width (zipped).
@@ -116,6 +118,18 @@ struct Pass {
     single: bool,
     /// a piece passing through the point (to be split)
     split: bool,
+}
+
+struct Plan {
+    st: u32,
+    vs: Vec<u32>,
+    es: Vec<u32>,
+    passes: Vec<Pass>,
+    pairs: Vec<(usize, usize, bool)>,
+    dead_verts: Vec<u32>,
+    dead_pieces: Vec<u32>,
+    whole_cycles: bool,
+    consistent: bool,
 }
 
 struct Ray {
@@ -650,11 +664,11 @@ impl Engine {
 
     // ---------------------------------------------------------------- surgery
 
-    fn piece_through(&self, p: u32, q: V2, t: f64) -> bool {
+    fn piece_through(&self, p: u32, q: V2, t: f64, radius: f64) -> bool {
         let pc = &self.pieces[p as usize];
         let ln = self.lines[pc.line as usize];
         let perp = (dot(ln.n, q) - ln.c - t).abs();
-        if perp > EPS_P {
+        if perp > radius {
             return false;
         }
         let ss = dot(ln.d, self.pos(pc.start, t));
@@ -663,11 +677,12 @@ impl Engine {
         ss < sq && sq < se
     }
 
-    /// Resolve everything that happens at point `p` at time `t`.
-    fn surgery(&mut self, t: f64, p: V2, forced: &[u32], forced_piece: u32) -> bool {
+    /// Collect everything at `p` at time `t` within `radius`, and work out how to reconnect it.
+    /// Nothing is modified (apart from marks).
+    fn plan(&mut self, t: f64, p: V2, forced: &[u32], forced_piece: u32, radius: f64) -> Option<Plan> {
         self.stamp += 1;
         let st = self.stamp;
-        let e2 = EPS_P * EPS_P;
+        let e2 = radius * radius;
         // 1. vertices at p
         let mut vs: Vec<u32> = Vec::new();
         for &v in forced {
@@ -700,7 +715,7 @@ impl Engine {
         }
         for k in 0..self.alive_pieces.len() {
             let nc = self.alive_piece_nc[k];
-            if (nc[0] * p[0] + nc[1] * p[1] - nc[2] - t).abs() > EPS_P {
+            if (nc[0] * p[0] + nc[1] * p[1] - nc[2] - t).abs() > radius {
                 continue;
             }
             let pid = self.alive_pieces[k];
@@ -711,20 +726,21 @@ impl Engine {
             if self.verts[pc.start as usize].zip || self.verts[pc.end as usize].zip {
                 continue;
             }
-            if self.piece_through(pid, p, t) {
+            if self.piece_through(pid, p, t, radius) {
                 self.pieces[pid as usize].mark = st;
                 es.push(pid);
             }
         }
         if vs.is_empty() {
-            return false;
+            return None;
         }
 
-        // 3. passes through p (nothing is modified yet)
+        // 3. passes through p
         let mut passes: Vec<Pass> = Vec::new();
         let mut dead_verts: Vec<u32> = Vec::new();
         let mut dead_pieces: Vec<u32> = Vec::new();
         let mut whole_cycles = false;
+        let mut consistent = true;
         for idx in 0..vs.len() {
             let v = vs[idx];
             if self.verts[v as usize].visit == st {
@@ -778,7 +794,13 @@ impl Engine {
                 c = nx;
             }
             let out_p = self.verts[c as usize].out_p;
-            passes.push(Pass { in_p, out_p, sigma: (PI - tsum).clamp(0.0, TAU), single, split: false });
+            let sigma = PI - tsum;
+            // a chain that turns by more than half a turn cannot collapse on its own: something
+            // nearby is missing from the event
+            if !(-EPS_ANG..=TAU + EPS_ANG).contains(&sigma) {
+                consistent = false;
+            }
+            passes.push(Pass { in_p, out_p, sigma: sigma.clamp(0.0, TAU), single, split: false });
         }
         for &e in &es {
             passes.push(Pass { in_p: e, out_p: NONE, sigma: PI, single: false, split: true });
@@ -838,11 +860,34 @@ impl Engine {
                     stack.push(i);
                 }
             }
+            if !lone_in.is_empty() {
+                consistent = false;
+            }
             // inconsistent configurations: pair whatever is left in order
-            for (i, o) in lone_in.into_iter().zip(stack.into_iter()) {
+            for (i, o) in lone_in.into_iter().zip(stack) {
                 pairs.push((rays[i].pass, rays[o].pass, false));
             }
         }
+        Some(Plan { st, vs, es, passes, pairs, dead_verts, dead_pieces, whole_cycles, consistent })
+    }
+
+    /// Resolve everything that happens at point `p` at time `t`. Returns false if nothing changed.
+    ///
+    /// When the reconnection comes out inconsistent (a chain turning by more than half a turn, or
+    /// unmatched rays), a participant was missed because rounding put it slightly too far away;
+    /// the collection radius is then widened tenfold, up to `EPS_P_MAX`.
+    fn surgery(&mut self, t: f64, p: V2, forced: &[u32], forced_piece: u32) -> bool {
+        let mut radius = EPS_P;
+        let plan = loop {
+            let Some(plan) = self.plan(t, p, forced, forced_piece, radius) else {
+                return false;
+            };
+            if plan.consistent || radius >= EPS_P_MAX {
+                break plan;
+            }
+            radius *= 10.0;
+        };
+        let Plan { st, vs, es, mut passes, pairs, dead_verts, dead_pieces, whole_cycles, .. } = plan;
         // nothing to do if every pass is a lone vertex that is joined back to itself
         if !whole_cycles && pairs.iter().all(|&(a, b, _)| a == b && passes[a].single) {
             return false;

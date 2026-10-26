@@ -148,6 +148,59 @@ fn compare(case: &Case, cg: &Cgal, mode: Mode) -> Vec<String> {
     // --- arcs between merged vertices
     let ours_cl = cluster(&sk.vertices, vtol);
     let cg_cl = cluster(&cg.vertices, vtol);
+
+    // --- exact mode: every face visits the same merged vertices, in the same order, as CGAL's
+    if matches!(mode, Mode::Exact) {
+        let cg_grid_all = Grid::new(&cg.vertices, vtol);
+        let to_cg = |i: usize| -> Option<usize> {
+            let v = sk.vertices[i];
+            cg_grid_all
+                .all_within(&v, &cg.vertices, vtol)
+                .into_iter()
+                .find(|&j| (cg.vertices[j][2] - v[2]).abs() <= vtol)
+                .map(|j| cg_cl[j])
+        };
+        let squash = |seq: Vec<usize>| -> Vec<usize> {
+            let mut out: Vec<usize> = Vec::new();
+            for c in seq {
+                if out.last() != Some(&c) {
+                    out.push(c);
+                }
+            }
+            while out.len() > 1 && out.first() == out.last() {
+                out.pop();
+            }
+            out
+        };
+        let mut bad = 0;
+        for (k, face) in sk.faces.iter().enumerate() {
+            if face.vertices.len() < 3 {
+                continue;
+            }
+            let Some(ours_seq) = face.vertices.iter().map(|&i| to_cg(i)).collect::<Option<Vec<usize>>>() else {
+                continue; // reported by the vertex check
+            };
+            let s = sk.vertices[face.edge.0];
+            let e = sk.vertices[face.edge.1];
+            let Some(ck) = grid.all_within(&[s[0], s[1], 0.0], &starts, etol.max(1e-12)).into_iter().find(|&ck| {
+                let end = cg.vertices[cg.polygons[ck][0]];
+                (end[0] - e[0]).hypot(end[1] - e[1]) <= etol
+            }) else {
+                continue;
+            };
+            let a = squash(ours_seq);
+            let b = squash(cg.polygons[ck].iter().map(|&j| cg_cl[j]).collect());
+            if a != b {
+                bad += 1;
+                if bad <= 3 {
+                    problems.push(format!("face {k}: merged vertex sequence {a:?} vs CGAL {b:?}"));
+                }
+            }
+        }
+        if bad > 3 {
+            problems.push(format!("{bad} faces differ from CGAL in their vertex sequence"));
+        }
+    }
     let ours_faces: Vec<Vec<usize>> = sk.faces.iter().map(|f| f.vertices.clone()).collect();
     let a_ours = cluster_arcs(&sk.vertices, &ours_faces, &ours_cl).len();
     let a_cg = cluster_arcs(&cg.vertices, &cg.polygons, &cg_cl).len();

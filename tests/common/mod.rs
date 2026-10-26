@@ -193,6 +193,35 @@ pub fn face_is_simple(pts: &[P2], tol: f64) -> bool {
     true
 }
 
+/// A straight skeleton face is monotone along its input edge: projected onto the edge direction,
+/// its boundary goes once up and once down. `pts` starts with the edge's end point and ends with
+/// its start point.
+pub fn face_is_monotone(pts: &[P2], tol: f64) -> bool {
+    let n = pts.len();
+    if n < 4 {
+        return true;
+    }
+    let (a, b) = (pts[n - 1], pts[0]);
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let l = d[0].hypot(d[1]);
+    if l == 0.0 {
+        return true;
+    }
+    let s: Vec<f64> = pts.iter().map(|p| ((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / l).collect();
+    // direction changes along the cycle, ignoring steps shorter than tol
+    let mut dirs: Vec<i8> = Vec::new();
+    for i in 0..n {
+        let ds = s[(i + 1) % n] - s[i];
+        if ds > tol {
+            dirs.push(1);
+        } else if ds < -tol {
+            dirs.push(-1);
+        }
+    }
+    let changes = (0..dirs.len()).filter(|&i| dirs[i] != dirs[(i + 1) % dirs.len()]).count();
+    changes <= 2
+}
+
 pub fn point_in_poly(p: P2, poly: &[P2]) -> bool {
     let n = poly.len();
     let mut inside = false;
@@ -316,6 +345,9 @@ pub fn check_properties(rings: &[Vec<P2>], sk: &Skeleton) -> Vec<String> {
         sum += a;
         if !face_is_simple(&pts, 1e-9 * diag) {
             problems.push(format!("face {k} is not simple"));
+        }
+        if !face_is_monotone(&pts, 1e-9 * diag) {
+            problems.push(format!("face {k} is not monotone along its edge"));
         }
     }
     if (sum - target).abs() > 1e-9 * target.max(diag * diag * 1e-6) {
