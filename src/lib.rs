@@ -94,7 +94,7 @@ impl Skeleton {
     pub fn build(rings: &[Vec<[f64; 2]>]) -> Result<Skeleton, SkeletonError> {
         let prep = input::prepare(rings)?;
         let eng = engine::Engine::new(&prep.rings);
-        let out = eng.run().map_err(|_| SkeletonError::Numerical)?;
+        let out = eng.run(&prep.touch_groups).map_err(|_| SkeletonError::Numerical)?;
         // computed edge -> (start node, end node)
         let mut edge_nodes: Vec<(u32, u32)> = Vec::new();
         let mut comp_edges: Vec<input::CompEdge> = Vec::new();
@@ -108,8 +108,14 @@ impl Skeleton {
             base += n;
         }
         let n_input_nodes = base as usize;
+        let mut canon: Vec<u32> = (0..n_input_nodes as u32).collect();
+        for g in &prep.touch_groups {
+            for &v in g {
+                canon[v] = g[0] as u32;
+            }
+        }
         let node_faces =
-            faces::assemble(&out.nodes, &out.arcs, &edge_nodes).map_err(|_| SkeletonError::Numerical)?;
+            faces::assemble(&out.nodes, &out.arcs, &edge_nodes, &canon).map_err(|_| SkeletonError::Numerical)?;
 
         let n_pts = prep.points.len();
         let mut vertices: Vec<[f64; 3]> = prep.points.iter().map(|p| [p[0], p[1], 0.0]).collect();

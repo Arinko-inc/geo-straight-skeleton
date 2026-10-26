@@ -13,6 +13,9 @@ pub struct Case {
     pub group: String,
     pub rings: Vec<Vec<P2>>,
     pub cgal: Option<Cgal>,
+    /// CGAL on a copy whose touching hole vertices were moved by `delta` (only for inputs whose
+    /// rings touch at a vertex, which CGAL's wrapper rejects)
+    pub cgal_perturbed: Option<(Cgal, f64)>,
     pub cgal_status: String,
     pub cgal_message: String,
     /// power-of-two extent the oracle used for float32 (rounding bound = s * 2^-24 per coordinate)
@@ -42,10 +45,10 @@ pub fn load_case(path: &Path) -> Case {
         .iter()
         .map(|r| r.as_array().expect("ring").iter().map(|p| [f(&p[0]), f(&p[1])]).collect())
         .collect();
-    let cg = &v["cgal"];
-    let status = cg["status"].as_str().unwrap_or("missing").to_string();
-    let message = cg["message"].as_str().unwrap_or("").to_string();
-    let cgal = if status == "ok" {
+    let parse = |cg: &Value| -> Option<Cgal> {
+        if cg["status"].as_str() != Some("ok") {
+            return None;
+        }
         Some(Cgal {
             vertices: cg["vertices"]
                 .as_array()
@@ -61,15 +64,19 @@ pub fn load_case(path: &Path) -> Case {
                 .map(|p| p.as_array().expect("poly").iter().map(|i| i.as_u64().expect("index") as usize).collect())
                 .collect(),
         })
-    } else {
-        None
     };
+    let cg = &v["cgal"];
+    let status = cg["status"].as_str().unwrap_or("missing").to_string();
+    let message = cg["message"].as_str().unwrap_or("").to_string();
+    let cgal = parse(cg);
+    let cgal_perturbed = parse(&v["cgal_perturbed"]).map(|c| (c, v["cgal_perturbed"]["delta"].as_f64().expect("delta")));
     let frame_s = v["frame"]["s"].as_f64().unwrap_or(1.0);
     Case {
         name: v["name"].as_str().expect("name").to_string(),
         group: v["group"].as_str().unwrap_or("").to_string(),
         rings,
         cgal,
+        cgal_perturbed,
         cgal_status: status,
         cgal_message: message,
         frame_s,
@@ -373,6 +380,26 @@ impl Grid {
             map.entry(((p[0] / cell).floor() as i64, (p[1] / cell).floor() as i64)).or_default().push(i);
         }
         Grid { cell, map }
+    }
+
+    /// Indices of all points within `tol` (in x and y only).
+    pub fn all_within(&self, p: &[f64; 3], points: &[[f64; 3]], tol: f64) -> Vec<usize> {
+        let (cx, cy) = ((p[0] / self.cell).floor() as i64, (p[1] / self.cell).floor() as i64);
+        let reach = (tol / self.cell).ceil() as i64;
+        let mut out = Vec::new();
+        for dx in -reach..=reach {
+            for dy in -reach..=reach {
+                if let Some(list) = self.map.get(&(cx + dx, cy + dy)) {
+                    for &j in list {
+                        let q = points[j];
+                        if (p[0] - q[0]).hypot(p[1] - q[1]) <= tol {
+                            out.push(j);
+                        }
+                    }
+                }
+            }
+        }
+        out
     }
 
     pub fn any_within(&self, p: &[f64; 3], points: &[[f64; 3]], tol: f64) -> bool {

@@ -32,6 +32,9 @@ pub(crate) struct Prepared {
     pub zero_edges: Vec<(usize, usize, usize)>,
     /// All input points (closing points removed), in input order.
     pub points: Vec<[f64; 2]>,
+    /// Groups of computed vertices (indices into the concatenated `rings`) at the same position:
+    /// rings that touch at a vertex.
+    pub touch_groups: Vec<Vec<usize>>,
     pub center: V2,
     pub scale: f64,
 }
@@ -163,13 +166,127 @@ pub(crate) fn prepare(rings: &[Vec<[f64; 2]>]) -> Result<Prepared, SkeletonError
         out_edges.push(edges);
     }
 
-    check_simple(&out_rings, &out_edges, &raw)?;
+    let (group_of, touch_groups) = find_touches(&out_rings);
+    check_simple(&out_rings, &out_edges, &raw, &group_of)?;
     if let Some(&ring) = zero_area_rings.first() {
         return Err(SkeletonError::ZeroArea { ring });
     }
+    check_touch_wedges(&out_rings, &out_edges, &raw, &touch_groups)?;
     check_holes(&out_rings)?;
 
-    Ok(Prepared { rings: out_rings, edges: out_edges, zero_edges, points, center, scale })
+    Ok(Prepared { rings: out_rings, edges: out_edges, zero_edges, points, touch_groups, center, scale })
+}
+
+/// Vertices of different rings (or non-consecutive vertices of one ring) at the same position.
+/// Returns the group of every computed vertex (`usize::MAX` = alone) and the groups.
+fn find_touches(rings: &[Vec<V2>]) -> (Vec<usize>, Vec<Vec<usize>>) {
+    let mut all: Vec<(V2, usize)> = Vec::new();
+    for ring in rings {
+        for &p in ring {
+            let id = all.len();
+            all.push((p, id));
+        }
+    }
+    let n = all.len();
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| all[a].0[0].total_cmp(&all[b].0[0]));
+    let mut group_of = vec![usize::MAX; n];
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let e2 = DUP_EPS * DUP_EPS;
+    for i in 0..n {
+        let a = order[i];
+        for &b in &order[i + 1..] {
+            if all[b].0[0] - all[a].0[0] > DUP_EPS {
+                break;
+            }
+            if dist2(all[a].0, all[b].0) <= e2 {
+                match (group_of[a], group_of[b]) {
+                    (usize::MAX, usize::MAX) => {
+                        group_of[a] = groups.len();
+                        group_of[b] = groups.len();
+                        groups.push(vec![a, b]);
+                    }
+                    (g, usize::MAX) => {
+                        group_of[b] = g;
+                        groups[g].push(b);
+                    }
+                    (usize::MAX, g) => {
+                        group_of[a] = g;
+                        groups[g].push(a);
+                    }
+                    (g, h) if g != h => {
+                        let moved = std::mem::take(&mut groups[h]);
+                        for &m in &moved {
+                            group_of[m] = g;
+                        }
+                        groups[g].extend(moved);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    groups.retain(|g| !g.is_empty());
+    for (k, g) in groups.iter_mut().enumerate() {
+        g.sort_unstable();
+        for &m in g.iter() {
+            group_of[m] = k;
+        }
+    }
+    (group_of, groups)
+}
+
+/// Where rings touch at a vertex, their wedges must not overlap: around the point, every
+/// vertex's exterior gap (from its incoming to its outgoing edge, counter-clockwise) must contain
+/// no edge of another vertex there.
+fn check_touch_wedges(
+    rings: &[Vec<V2>],
+    edges: &[Vec<CompEdge>],
+    raw: &[RawRing],
+    groups: &[Vec<usize>],
+) -> Result<(), SkeletonError> {
+    let mut loc: Vec<(usize, usize)> = Vec::new();
+    for (r, ring) in rings.iter().enumerate() {
+        for j in 0..ring.len() {
+            loc.push((r, j));
+        }
+    }
+    for g in groups {
+        // rays: (angle, is_in, member)
+        let mut rays: Vec<(f64, bool, usize)> = Vec::new();
+        for (k, &v) in g.iter().enumerate() {
+            let (r, j) = loc[v];
+            let ring = &rings[r];
+            let n = ring.len();
+            let p = ring[j];
+            let prev = ring[(j + n - 1) % n];
+            let next = ring[(j + 1) % n];
+            rays.push((angle(sub(prev, p)), true, k));
+            rays.push((angle(sub(next, p)), false, k));
+        }
+        rays.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let m = rays.len();
+        // each In ray must be followed directly by the Out ray of the same vertex
+        let ok = (0..m).all(|i| {
+            let (a, is_in, k) = rays[i];
+            if !is_in {
+                return true;
+            }
+            let (b, is_in2, k2) = rays[(i + 1) % m];
+            !is_in2 && k2 == k && b != a
+        });
+        if !ok {
+            let (ra, ja) = loc[g[0]];
+            let (rb, jb) = loc[g[1]];
+            return Err(SkeletonError::SelfIntersection {
+                ring_a: ra,
+                edge_a: edges[ra][ja].orig - raw[ra].offset,
+                ring_b: rb,
+                edge_b: edges[rb][jb].orig - raw[rb].offset,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn all_collinear(pts: &[V2]) -> bool {
@@ -210,10 +327,18 @@ fn segs_touch(a: V2, b: V2, c: V2, d: V2) -> bool {
         || point_seg_dist2(d, a, b) <= e2
 }
 
-fn check_simple(rings: &[Vec<V2>], edges: &[Vec<CompEdge>], raw: &[RawRing]) -> Result<(), SkeletonError> {
+fn check_simple(
+    rings: &[Vec<V2>],
+    edges: &[Vec<CompEdge>],
+    raw: &[RawRing],
+    group_of: &[usize],
+) -> Result<(), SkeletonError> {
     struct Seg {
         ring: usize,
         j: usize,
+        /// global ids of the endpoints
+        ia: usize,
+        ib: usize,
         a: V2,
         b: V2,
         xmin: f64,
@@ -222,6 +347,7 @@ fn check_simple(rings: &[Vec<V2>], edges: &[Vec<CompEdge>], raw: &[RawRing]) -> 
         ymax: f64,
     }
     let mut segs: Vec<Seg> = Vec::new();
+    let mut base = 0;
     for (r, ring) in rings.iter().enumerate() {
         let n = ring.len();
         for j in 0..n {
@@ -230,6 +356,8 @@ fn check_simple(rings: &[Vec<V2>], edges: &[Vec<CompEdge>], raw: &[RawRing]) -> 
             segs.push(Seg {
                 ring: r,
                 j,
+                ia: base + j,
+                ib: base + (j + 1) % n,
                 a,
                 b,
                 xmin: a[0].min(b[0]),
@@ -238,7 +366,9 @@ fn check_simple(rings: &[Vec<V2>], edges: &[Vec<CompEdge>], raw: &[RawRing]) -> 
                 ymax: a[1].max(b[1]),
             });
         }
+        base += n;
     }
+    let same = |x: usize, y: usize| group_of[x] != usize::MAX && group_of[x] == group_of[y];
     let err = |s: &Seg, t: &Seg| {
         let ea = edges[s.ring][s.j].orig - raw[s.ring].offset;
         let eb = edges[t.ring][t.j].orig - raw[t.ring].offset;
@@ -271,6 +401,27 @@ fn check_simple(rings: &[Vec<V2>], edges: &[Vec<CompEdge>], raw: &[RawRing]) -> 
                 }
             }
             if segs_touch(s.a, s.b, t.a, t.b) {
+                // allowed: the two edges only share an endpoint where rings touch at a vertex
+                let shared = [(s.ia, t.ia), (s.ia, t.ib), (s.ib, t.ia), (s.ib, t.ib)]
+                    .iter()
+                    .filter(|&&(x, y)| same(x, y))
+                    .count();
+                if shared == 1 {
+                    let e2 = TOUCH_EPS * TOUCH_EPS;
+                    let (u, w) = if same(s.ia, t.ia) {
+                        (s.b, t.b)
+                    } else if same(s.ia, t.ib) {
+                        (s.b, t.a)
+                    } else if same(s.ib, t.ia) {
+                        (s.a, t.b)
+                    } else {
+                        (s.a, t.a)
+                    };
+                    // the far endpoints must stay off the other edge (no overlap)
+                    if point_seg_dist2(u, t.a, t.b) > e2 && point_seg_dist2(w, s.a, s.b) > e2 {
+                        continue;
+                    }
+                }
                 return Err(err(s, t));
             }
         }
@@ -298,8 +449,8 @@ fn point_in_ring(p: V2, ring: &[V2]) -> bool {
 
 fn check_holes(rings: &[Vec<V2>]) -> Result<(), SkeletonError> {
     for h in 1..rings.len() {
-        // no edges touch, so one vertex decides containment
-        let p = rings[h][0];
+        // edges only touch at shared vertices, so the middle of an edge decides containment
+        let p = mul(add(rings[h][0], rings[h][1]), 0.5);
         if !point_in_ring(p, &rings[0]) {
             return Err(SkeletonError::HoleOutside { ring: h });
         }

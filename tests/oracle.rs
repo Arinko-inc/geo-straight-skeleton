@@ -3,26 +3,45 @@
 //! For every corpus case CGAL could solve:
 //! * per face (matched by its input edge): area within a relative 1e-6;
 //! * the face areas sum to the polygon area;
-//! * skeleton vertices (time > 0): after merging vertices at the same position on each side, every
-//!   vertex has a counterpart on the other side within 1e-6 x bounding-box diagonal (x, y and time);
-//! * the number of interior arcs matches (counted between merged vertices).
+//! * every skeleton vertex (time > 0) has a counterpart on the other side within
+//!   1e-6 x bounding-box diagonal (x, y and time);
+//! * the number of interior arcs matches, counted between merged vertices (vertices at the same
+//!   position are merged on each side first: CGAL does not merge coincident nodes).
 //!
 //! Tolerances also allow for the float32 rounding of CGAL vertices that could not be refined
 //! (`refined[i] == false` in the corpus, about `s * 2^-24` per coordinate).
-//! Cases CGAL could not solve are checked by `tests/properties.rs`.
+//!
+//! Inputs whose rings touch at a vertex are rejected by CGAL's wrapper (it returns null). For those
+//! the corpus holds CGAL's result on a copy whose touching hole vertices were pulled into their
+//! holes by `delta` (about 1e-6 of the extent); the comparison then allows `10 * delta` more.
+//! Cases CGAL could not solve at all are checked by `tests/properties.rs` only.
 
 mod common;
 use common::*;
 use skeleton_rs::Skeleton;
-use std::collections::HashMap;
 
 struct Report {
     name: String,
     problems: Vec<String>,
 }
 
-fn compare(case: &Case) -> Vec<String> {
-    let cg = case.cgal.as_ref().expect("cgal result");
+#[derive(Clone, Copy)]
+enum Mode {
+    Exact,
+    Perturbed(f64),
+}
+
+fn perimeter(pts: &[P2]) -> f64 {
+    (0..pts.len())
+        .map(|i| {
+            let a = pts[i];
+            let b = pts[(i + 1) % pts.len()];
+            (b[0] - a[0]).hypot(b[1] - a[1])
+        })
+        .sum()
+}
+
+fn compare(case: &Case, cg: &Cgal, mode: Mode) -> Vec<String> {
     let mut problems = Vec::new();
     let sk = match Skeleton::build(&case.rings) {
         Ok(s) => s,
@@ -31,17 +50,24 @@ fn compare(case: &Case) -> Vec<String> {
     let diag = bbox_diag(&case.rings);
     let f32_err = case.frame_s * 2f64.powi(-23);
     let tol = 1e-6 * diag;
+    let extra = match mode {
+        Mode::Exact => 0.0,
+        Mode::Perturbed(d) => 10.0 * d,
+    };
     let unrefined_any = cg.refined.iter().any(|r| !r);
-    let vtol = tol + if unrefined_any { f32_err } else { 0.0 };
+    let vtol = tol + extra + if unrefined_any { f32_err } else { 0.0 };
 
-    // --- faces by input edge (positions of the two endpoints)
-    let key = |p: [f64; 3]| (p[0].to_bits(), p[1].to_bits());
-    let mut cg_faces: HashMap<((u64, u64), (u64, u64)), usize> = HashMap::new();
-    for (k, poly) in cg.polygons.iter().enumerate() {
-        let end = cg.vertices[poly[0]];
-        let start = cg.vertices[*poly.last().expect("face")];
-        cg_faces.insert((key(start), key(end)), k);
-    }
+    // --- faces by input edge: the CGAL face whose base edge has (nearly) the same endpoints
+    let starts: Vec<[f64; 3]> = cg
+        .polygons
+        .iter()
+        .map(|poly| {
+            let s = cg.vertices[*poly.last().expect("face")];
+            [s[0], s[1], 0.0]
+        })
+        .collect();
+    let etol = 2.0 * extra + 1e-12 * diag;
+    let grid = Grid::new(&starts, etol.max(1e-9 * diag));
     let poly_pts = |poly: &[usize], vs: &[[f64; 3]]| -> Vec<P2> { poly.iter().map(|&i| [vs[i][0], vs[i][1]]).collect() };
     let mut matched = 0;
     for (k, face) in sk.faces.iter().enumerate() {
@@ -50,26 +76,22 @@ fn compare(case: &Case) -> Vec<String> {
         }
         let s = sk.vertices[face.edge.0];
         let e = sk.vertices[face.edge.1];
-        let Some(&ck) = cg_faces.get(&(key(s), key(e))) else {
+        let found = grid.all_within(&[s[0], s[1], 0.0], &starts, etol.max(1e-12)).into_iter().find(|&ck| {
+            let end = cg.vertices[cg.polygons[ck][0]];
+            (end[0] - e[0]).hypot(end[1] - e[1]) <= etol
+        });
+        let Some(ck) = found else {
             problems.push(format!("face {k}: no CGAL face for edge {:?}", face.edge));
             continue;
         };
         matched += 1;
         let ours = area(&face_points(&sk, k));
         let cpoly = &cg.polygons[ck];
-        let theirs = area(&poly_pts(cpoly, &cg.vertices));
-        let perim: f64 = {
-            let pts = poly_pts(cpoly, &cg.vertices);
-            (0..pts.len())
-                .map(|i| {
-                    let a = pts[i];
-                    let b = pts[(i + 1) % pts.len()];
-                    (b[0] - a[0]).hypot(b[1] - a[1])
-                })
-                .sum()
-        };
+        let cpts = poly_pts(cpoly, &cg.vertices);
+        let theirs = area(&cpts);
+        let perim = perimeter(&cpts);
         let face_unrefined = cpoly.iter().any(|&i| !cg.refined[i]);
-        let atol = 1e-6 * theirs.abs() + perim * if face_unrefined { f32_err } else { 1e-12 * diag };
+        let atol = 1e-6 * theirs.abs() + perim * (extra + if face_unrefined { f32_err } else { 1e-12 * diag });
         if (ours - theirs).abs() > atol {
             problems.push(format!(
                 "face {k} edge {:?}: area {ours} vs CGAL {theirs} (rel {:.2e})",
@@ -87,45 +109,45 @@ fn compare(case: &Case) -> Vec<String> {
     if (sum_ours - target).abs() > 1e-9 * target {
         problems.push(format!("our faces sum to {sum_ours}, polygon area {target}"));
     }
-    if (sum_cgal - target).abs() > 1e-6 * target {
+    if matches!(mode, Mode::Exact) && (sum_cgal - target).abs() > 1e-6 * target {
         problems.push(format!("CGAL faces sum to {sum_cgal}, polygon area {target}"));
     }
 
-    // --- skeleton vertices: each one needs a counterpart on the other side
-    let ours_cl = cluster(&sk.vertices, vtol);
-    let cg_cl = cluster(&cg.vertices, vtol);
+    // --- skeleton vertices: each one needs a counterpart on the other side. With a perturbed
+    // oracle, CGAL has tiny extra nodes next to the touching points; they match our input vertices.
     let inner = |vs: &[[f64; 3]]| -> Vec<[f64; 3]> { vs.iter().copied().filter(|v| v[2] > 0.0).collect() };
-    let ours_v = inner(&sk.vertices);
-    let cg_v = inner(&cg.vertices);
-    let ours_grid = Grid::new(&ours_v, vtol);
-    let cg_grid = Grid::new(&cg_v, vtol);
-    let near = |p: &[f64; 3], set: &[[f64; 3]]| {
-        let grid = if std::ptr::eq(set, ours_v.as_slice()) { &ours_grid } else { &cg_grid };
-        grid.any_within(p, set, vtol)
+    let (ours_v, cg_v) = (inner(&sk.vertices), inner(&cg.vertices));
+    let (ours_all, cg_all): (Vec<[f64; 3]>, Vec<[f64; 3]>) = match mode {
+        Mode::Exact => (ours_v.clone(), cg_v.clone()),
+        Mode::Perturbed(_) => (sk.vertices.clone(), cg.vertices.clone()),
     };
+    let ours_grid = Grid::new(&ours_all, vtol);
+    let cg_grid = Grid::new(&cg_all, vtol);
     let mut missing = 0;
     for v in &cg_v {
-        if !near(v, &ours_v) {
+        if !ours_grid.any_within(v, &ours_all, vtol) {
             missing += 1;
             if missing <= 5 {
                 problems.push(format!("CGAL vertex {:?} has no match in ours", v));
             }
         }
     }
-    let mut extra = 0;
+    let mut unmatched = 0;
     for v in &ours_v {
-        if !near(v, &cg_v) {
-            extra += 1;
-            if extra <= 5 {
+        if !cg_grid.any_within(v, &cg_all, vtol) {
+            unmatched += 1;
+            if unmatched <= 5 {
                 problems.push(format!("our vertex {:?} has no match in CGAL", v));
             }
         }
     }
-    if missing + extra > 10 {
-        problems.push(format!("{missing} CGAL vertices unmatched, {extra} of ours unmatched"));
+    if missing + unmatched > 10 {
+        problems.push(format!("{missing} CGAL vertices unmatched, {unmatched} of ours unmatched"));
     }
 
     // --- arcs between merged vertices
+    let ours_cl = cluster(&sk.vertices, vtol);
+    let cg_cl = cluster(&cg.vertices, vtol);
     let ours_faces: Vec<Vec<usize>> = sk.faces.iter().map(|f| f.vertices.clone()).collect();
     let a_ours = cluster_arcs(&sk.vertices, &ours_faces, &ours_cl).len();
     let a_cg = cluster_arcs(&cg.vertices, &cg.polygons, &cg_cl).len();
@@ -138,27 +160,34 @@ fn compare(case: &Case) -> Vec<String> {
 #[test]
 fn oracle_corpus() {
     let corpus = load_corpus();
-    assert!(!corpus.is_empty(), "empty corpus");
+    if corpus.is_empty() {
+        eprintln!("oracle: no corpus in {} (it is not part of the published crate)", corpus_dir().display());
+        return;
+    }
     let known: Vec<String> = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("known-diffs.md"),
     )
     .map(|s| {
         s.lines()
             .filter_map(|l| l.strip_prefix("- case: "))
-            .map(|l| l.split_whitespace().next().unwrap_or("").to_string())
+            .map(|l| l.split_whitespace().next().unwrap_or("").trim_matches('`').to_string())
             .collect()
     })
     .unwrap_or_default();
-    let mut compared = 0;
+    let (mut exact, mut perturbed) = (0, 0);
     let mut reports: Vec<Report> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
     for case in &corpus {
-        if case.cgal.is_none() {
+        let problems = if let Some(cg) = &case.cgal {
+            exact += 1;
+            compare(case, cg, Mode::Exact)
+        } else if let Some((cg, delta)) = &case.cgal_perturbed {
+            perturbed += 1;
+            compare(case, cg, Mode::Perturbed(*delta))
+        } else {
             skipped.push(format!("{} (CGAL: {} {})", case.name, case.cgal_status, case.cgal_message));
             continue;
-        }
-        compared += 1;
-        let problems = compare(case);
+        };
         if !problems.is_empty() {
             reports.push(Report { name: case.name.clone(), problems });
         }
@@ -175,8 +204,9 @@ fn oracle_corpus() {
         }
     }
     eprintln!(
-        "oracle: {compared} compared, {} passed, {} differ ({} unexpected); {} not solvable by CGAL: {}",
-        compared - reports.len(),
+        "oracle: {} cases; {exact} compared with CGAL, {perturbed} with CGAL on a perturbed copy; {} passed, {} differ ({} unexpected); {} not solvable by CGAL: {}",
+        corpus.len(),
+        exact + perturbed - reports.len(),
         reports.len(),
         unexpected,
         skipped.len(),

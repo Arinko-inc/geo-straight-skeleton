@@ -234,3 +234,38 @@ fn jittered_ellipses() {
         assert_eq!(sk.faces.len(), n);
     }
 }
+
+#[test]
+fn rings_touching_at_a_vertex() {
+    // a triangular hole touching the outer ring at (5, 0)
+    let outer = ring(&[(0., 0.), (5., 0.), (10., 0.), (10., 10.), (0., 10.)]);
+    let hole = ring(&[(5., 0.), (3., 4.), (7., 4.)]);
+    let sk = Skeleton::build(&[outer.clone(), hole]).unwrap();
+    assert_eq!(sk.faces.len(), 8);
+    let area: f64 = sk.faces.iter().map(|f| face_area(&sk, &f.vertices)).sum();
+    assert!((area - 92.0).abs() < 1e-9, "area {area}");
+    // two holes sharing a vertex, and three holes meeting in one point
+    let two = [
+        ring(&[(0., 0.), (20., 0.), (20., 10.), (0., 10.)]),
+        ring(&[(2., 2.), (2., 8.), (10., 5.)]),
+        ring(&[(10., 5.), (18., 8.), (18., 2.)]),
+    ];
+    assert_eq!(Skeleton::build(&two).unwrap().faces.len(), 10);
+    let three = [
+        ring(&[(0., 0.), (20., 0.), (20., 20.), (0., 20.)]),
+        ring(&[(10., 10.), (4., 14.), (4., 6.)]),
+        ring(&[(10., 10.), (16., 6.), (16., 14.)]),
+        ring(&[(10., 10.), (6., 16.), (14., 16.)]),
+    ];
+    assert_eq!(Skeleton::build(&three).unwrap().faces.len(), 13);
+    // overlapping wedges at a shared vertex are rejected
+    let overlap = [
+        ring(&[(0., 0.), (20., 0.), (20., 20.), (0., 20.)]),
+        ring(&[(10., 10.), (4., 14.), (4., 6.)]),
+        ring(&[(10., 10.), (5., 13.), (5., 7.)]),
+    ];
+    assert!(matches!(Skeleton::build(&overlap), Err(SkeletonError::SelfIntersection { .. })));
+    // touching an edge (not a vertex) is still an error
+    let on_edge = [outer, ring(&[(4., 0.), (3., 4.), (7., 4.)])];
+    assert!(matches!(Skeleton::build(&on_edge), Err(SkeletonError::SelfIntersection { .. })));
+}

@@ -138,7 +138,15 @@ pub(crate) struct Engine {
     line_pieces: Vec<Vec<u32>>,
     alive_verts: Vec<u32>,
     alive_pieces: Vec<u32>,
+    /// kinematics of each live vertex (pos.x, pos.y, vel.x, vel.y, t0), parallel to `alive_verts`
+    alive_kin: Vec<[f64; 5]>,
+    /// line of each live piece (n.x, n.y, c), parallel to `alive_pieces`
+    alive_piece_nc: Vec<[f64; 3]>,
     reflex: Vec<u32>,
+    /// kinematics of each reflex vertex (pos.x, pos.y, vel.x, vel.y, t0), parallel to `reflex`
+    reflex_kin: Vec<[f64; 5]>,
+    /// current split time of each reflex vertex, parallel to `reflex`
+    reflex_best: Vec<f64>,
     queue: EventQueue,
     nodes: Vec<Node>,
     n_input: usize,
@@ -148,6 +156,8 @@ pub(crate) struct Engine {
     zips: Vec<u32>,
     modified: Vec<u32>,
     new_verts: Vec<u32>,
+    /// node to use for the next surgery instead of looking one up (rings touching at time 0)
+    node_override: u32,
 }
 
 /// Debug tracing (debug builds only): set `SK_TRACE=1`.
@@ -184,7 +194,11 @@ impl Engine {
             line_pieces: Vec::with_capacity(total),
             alive_verts: Vec::with_capacity(total),
             alive_pieces: Vec::with_capacity(total),
+            alive_piece_nc: Vec::with_capacity(total),
+            alive_kin: Vec::with_capacity(total),
             reflex: Vec::new(),
+            reflex_kin: Vec::new(),
+            reflex_best: Vec::new(),
             queue: EventQueue::new(),
             nodes: Vec::with_capacity(total * 2),
             n_input: total,
@@ -194,6 +208,7 @@ impl Engine {
             zips: Vec::new(),
             modified: Vec::new(),
             new_verts: Vec::new(),
+            node_override: NONE,
         };
         for ring in rings {
             let n = ring.len();
@@ -239,6 +254,8 @@ impl Engine {
             modified: 0,
         });
         self.alive_pieces.push(id);
+        let ln = self.lines[line as usize];
+        self.alive_piece_nc.push([ln.n[0], ln.n[1], ln.c]);
         self.line_pieces[line as usize].push(id);
         id
     }
@@ -275,11 +292,14 @@ impl Engine {
             visit: 0,
         });
         self.alive_verts.push(id);
+        self.alive_kin.push([pos[0], pos[1], vel[0], vel[1], t]);
         self.pieces[in_p as usize].end = id;
         self.pieces[out_p as usize].start = id;
         if reflex {
             self.verts[id as usize].reflex_idx = self.reflex.len() as u32;
             self.reflex.push(id);
+            self.reflex_kin.push([pos[0], pos[1], vel[0], vel[1], t]);
+            self.reflex_best.push(f64::INFINITY);
         }
         id
     }
@@ -309,6 +329,7 @@ impl Engine {
         let ri = vv.reflex_idx;
         vv.reflex_idx = NONE;
         self.alive_verts.swap_remove(ai);
+        self.alive_kin.swap_remove(ai);
         if ai < self.alive_verts.len() {
             let moved = self.alive_verts[ai];
             self.verts[moved as usize].alive_idx = ai as u32;
@@ -316,6 +337,8 @@ impl Engine {
         if ri != NONE {
             let ri = ri as usize;
             self.reflex.swap_remove(ri);
+            self.reflex_kin.swap_remove(ri);
+            self.reflex_best.swap_remove(ri);
             if ri < self.reflex.len() {
                 let moved = self.reflex[ri];
                 self.verts[moved as usize].reflex_idx = ri as u32;
@@ -333,6 +356,7 @@ impl Engine {
         let ai = pc.alive_idx as usize;
         let line = pc.line as usize;
         self.alive_pieces.swap_remove(ai);
+        self.alive_piece_nc.swap_remove(ai);
         if ai < self.alive_pieces.len() {
             let moved = self.alive_pieces[ai];
             self.pieces[moved as usize].alive_idx = ai as u32;
@@ -421,14 +445,10 @@ impl Engine {
         self.queue.remove(eslot(p));
     }
 
-    /// Time at which reflex vertex `r` reaches piece `p`, if it does.
-    fn split_time(&self, r: u32, p: u32) -> Option<f64> {
+    /// Time at which reflex vertex `r` reaches piece `p`, if it does so before `limit`.
+    fn split_time(&self, r: u32, p: u32, limit: f64) -> Option<f64> {
         let pc = &self.pieces[p as usize];
         if pc.start == r || pc.end == r {
-            return None;
-        }
-        let (vs, ve) = (&self.verts[pc.start as usize], &self.verts[pc.end as usize]);
-        if vs.zip || ve.zip {
             return None;
         }
         let rv = &self.verts[r as usize];
@@ -444,10 +464,30 @@ impl Engine {
             return None;
         }
         let th = t + dist0.max(0.0) / closing;
-        if !th.is_finite() {
+        // the three-line time below may differ from the trajectory by this much
+        let slack = 1e-7 + 1e-3 * (th - t);
+        if !(th < limit + slack) {
             return None;
         }
+        let (vs, ve) = (&self.verts[pc.start as usize], &self.verts[pc.end as usize]);
+        if vs.zip || ve.zip {
+            return None;
+        }
+        // cheap test on the trajectories first
+        {
+            let q = add(pr, mul(rv.vel, th - t));
+            let ss = dot(ln.d, self.pos(pc.start, th));
+            let se = dot(ln.d, self.pos(pc.end, th));
+            let sq = dot(ln.d, q);
+            let margin = 1e-6 + slack * (1.0 + norm(rv.vel) + norm(vs.vel) + norm(ve.vel));
+            if se < ss - margin || sq < ss - margin || sq > se + margin {
+                return None;
+            }
+        }
         let (q, th) = self.split_point(r, pc.line, th);
+        if th >= limit {
+            return None;
+        }
         // a vertex created at this instant has already been reconciled with everything at its
         // position (the surgery that created it saw all of it)
         if th - t <= EPS_T && rv.t0 >= t - EPS_T && dist2(q, pr) <= EPS_P * EPS_P {
@@ -457,9 +497,6 @@ impl Engine {
         let se = dot(ln.d, self.pos(pc.end, th));
         let sq = dot(ln.d, q);
         let tol = 0.5 * EPS_P;
-        if trace() && std::env::var("SK_TRACE_V").ok().and_then(|v| v.parse::<u32>().ok()) == Some(r) {
-            eprintln!("    split_time v{r} piece {p} (line {}, {}->{}) now={t:.9} dist0={dist0:.3e} th={th:.9} ss={ss:.9} sq={sq:.9} se={se:.9}", pc.line, pc.start, pc.end);
-        }
         if se < ss - tol || sq < ss - tol || sq > se + tol {
             return None;
         }
@@ -479,41 +516,75 @@ impl Engine {
         (self.pos(r, t_traj), t_traj)
     }
 
-    fn rescan(&mut self, r: u32) {
-        let mut best = f64::INFINITY;
-        let mut best_line = NONE;
-        for k in 0..self.alive_pieces.len() {
-            let p = self.alive_pieces[k];
-            if let Some(th) = self.split_time(r, p) {
-                if th < best {
-                    best = th;
-                    best_line = self.pieces[p as usize].line;
-                }
-            }
-        }
-        if trace() {
-            eprintln!("  rescan v{r}: best line {best_line} at {best}");
-        }
+    fn set_split(&mut self, r: u32, time: f64, line: u32) {
         let rv = &mut self.verts[r as usize];
-        rv.split_time = best;
-        rv.split_line = best_line;
-        if best_line != NONE {
-            self.queue.set(sslot(r), best);
+        rv.split_time = time;
+        rv.split_line = line;
+        if rv.reflex_idx != NONE {
+            self.reflex_best[rv.reflex_idx as usize] = time;
+        }
+        if line != NONE {
+            self.queue.set(sslot(r), time);
         } else {
             self.queue.remove(sslot(r));
         }
     }
 
+    /// Cheap necessary condition for `r` (at `pr`, moving with `vel`) to reach the line `nc`
+    /// before `limit`: the same arithmetic as the start of [`Engine::split_time`].
+    #[inline]
+    fn may_reach(nc: [f64; 3], pr: V2, vel: V2, t: f64, limit: f64) -> bool {
+        let dist0 = nc[0] * pr[0] + nc[1] * pr[1] - nc[2] - t;
+        if dist0 < -EPS_P {
+            return false;
+        }
+        let closing = 1.0 - (nc[0] * vel[0] + nc[1] * vel[1]);
+        if closing <= 1e-12 {
+            return false;
+        }
+        let th = t + dist0.max(0.0) / closing;
+        th < limit + 1e-7 + 1e-3 * (th - t)
+    }
+
+    /// Full search for the first split event of reflex vertex `r`.
+    fn rescan(&mut self, r: u32) {
+        let mut best = f64::INFINITY;
+        let mut best_line = NONE;
+        let t = self.now;
+        let pr = self.pos(r, t);
+        let vel = self.verts[r as usize].vel;
+        for k in 0..self.alive_pieces.len() {
+            if !Self::may_reach(self.alive_piece_nc[k], pr, vel, t, best) {
+                continue;
+            }
+            let p = self.alive_pieces[k];
+            if let Some(th) = self.split_time(r, p, best) {
+                best = th;
+                best_line = self.pieces[p as usize].line;
+            }
+        }
+        if trace() {
+            eprintln!("  rescan v{r}: best line {best_line} at {best}");
+        }
+        self.set_split(r, best, best_line);
+    }
+
+    /// A piece changed: does any reflex vertex now reach it earlier than its current event?
     fn recheck(&mut self, p: u32) {
+        let line = self.pieces[p as usize].line;
+        let ln = self.lines[line as usize];
+        let nc = [ln.n[0], ln.n[1], ln.c];
+        let t = self.now;
         for k in 0..self.reflex.len() {
+            let [px, py, vx, vy, t0] = self.reflex_kin[k];
+            let limit = self.reflex_best[k];
+            let pr = [px + vx * (t - t0), py + vy * (t - t0)];
+            if !Self::may_reach(nc, pr, [vx, vy], t, limit) {
+                continue;
+            }
             let r = self.reflex[k];
-            if let Some(th) = self.split_time(r, p) {
-                let rv = &mut self.verts[r as usize];
-                if th < rv.split_time {
-                    rv.split_time = th;
-                    rv.split_line = self.pieces[p as usize].line;
-                    self.queue.set(sslot(r), th);
-                }
+            if let Some(th) = self.split_time(r, p, limit) {
+                self.set_split(r, th, line);
             }
         }
     }
@@ -607,8 +678,13 @@ impl Engine {
             }
         }
         for k in 0..self.alive_verts.len() {
+            let [px, py, vx, vy, t0] = self.alive_kin[k];
+            let q = [px + vx * (t - t0), py + vy * (t - t0)];
+            if dist2(q, p) > e2 {
+                continue;
+            }
             let v = self.alive_verts[k];
-            if self.verts[v as usize].mark != st && dist2(self.pos(v, t), p) <= e2 {
+            if self.verts[v as usize].mark != st {
                 self.verts[v as usize].mark = st;
                 vs.push(v);
             }
@@ -623,6 +699,10 @@ impl Engine {
             }
         }
         for k in 0..self.alive_pieces.len() {
+            let nc = self.alive_piece_nc[k];
+            if (nc[0] * p[0] + nc[1] * p[1] - nc[2] - t).abs() > EPS_P {
+                continue;
+            }
             let pid = self.alive_pieces[k];
             let pc = &self.pieces[pid as usize];
             if pc.mark == st || self.verts[pc.start as usize].mark == st || self.verts[pc.end as usize].mark == st {
@@ -767,7 +847,7 @@ impl Engine {
         if !whole_cycles && pairs.iter().all(|&(a, b, _)| a == b && passes[a].single) {
             return false;
         }
-        let node = self.node_at(p, t);
+        let node = if self.node_override != NONE { self.node_override } else { self.node_at(p, t) };
         if trace() {
             eprintln!(
                 "surgery t={t:.12} p=({:.12},{:.12}) node={node} verts={:?} pieces={:?}",
@@ -892,6 +972,8 @@ impl Engine {
             zv.pos = q;
             zv.t0 = t;
             zv.vel = [0.0, 0.0];
+            let ai = zv.alive_idx as usize;
+            self.alive_kin[ai] = [q[0], q[1], 0.0, 0.0, t];
         }
         let n = if forced[2] == NONE { 2 } else { 3 };
         let f = forced;
@@ -907,16 +989,28 @@ impl Engine {
         }
     }
 
-    pub(crate) fn run(mut self) -> Result<Output, EngineError> {
+    /// Run the propagation. `touch_groups` lists input vertices at the same position (rings
+    /// touching at a vertex); they are reconnected at time 0, at the node of the group's first vertex.
+    pub(crate) fn run(mut self, touch_groups: &[Vec<usize>]) -> Result<Output, EngineError> {
+        for g in touch_groups {
+            let ids: Vec<u32> = g.iter().map(|&v| v as u32).collect();
+            let canon = ids[0];
+            let p = self.verts[canon as usize].pos;
+            self.node_override = canon;
+            let _ = self.surgery(0.0, p, &ids, NONE);
+            self.node_override = NONE;
+        }
         // initial events
-        for p in 0..self.pieces.len() as u32 {
+        for k in 0..self.alive_pieces.len() {
+            let p = self.alive_pieces[k];
             self.update_edge_event(p);
         }
         for k in 0..self.reflex.len() {
             let r = self.reflex[k];
             self.rescan(r);
         }
-        for v in 0..self.verts.len() as u32 {
+        for k in 0..self.alive_verts.len() {
+            let v = self.alive_verts[k];
             if self.verts[v as usize].zip {
                 self.zips.push(v);
             }
@@ -943,6 +1037,10 @@ impl Engine {
                 let r = slot >> 1;
                 let line = self.verts[r as usize].split_line;
                 self.verts[r as usize].split_time = f64::INFINITY;
+                let ri = self.verts[r as usize].reflex_idx;
+                if ri != NONE {
+                    self.reflex_best[ri as usize] = f64::INFINITY;
+                }
                 let (q, _) = self.split_point(r, line, t);
                 let changed = match self.find_on_line(line, r, q, t) {
                     Hit::Interior(pid) => self.surgery(t, q, &[r], pid),

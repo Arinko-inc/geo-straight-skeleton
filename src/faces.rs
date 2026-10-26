@@ -4,20 +4,25 @@ use crate::engine::{Arc, Node};
 use crate::geom::*;
 
 /// Faces of the computed edges, as node sequences `[end, ...skeleton nodes..., start]`.
+/// `canon` maps every node to a representative: input vertices at the same position (rings that
+/// touch) share one.
 pub(crate) fn assemble(
     nodes: &[Node],
     arcs: &[Arc],
     edge_nodes: &[(u32, u32)],
+    canon: &[u32],
 ) -> Result<Vec<Vec<u32>>, usize> {
     let n_faces = edge_nodes.len();
+    let c = |n: u32| canon.get(n as usize).copied().unwrap_or(n);
     // directed half-arcs per face: (face, from, to)
     let mut half: Vec<(u32, u32, u32)> = Vec::with_capacity(arcs.len() * 2);
     for a in arcs {
-        if a.a == a.b {
+        let (na, nb) = (c(a.a), c(a.b));
+        if na == nb {
             continue;
         }
-        half.push((a.left, a.a, a.b));
-        half.push((a.right, a.b, a.a));
+        half.push((a.left, na, nb));
+        half.push((a.right, nb, na));
     }
     half.sort_unstable();
     half.dedup();
@@ -31,6 +36,7 @@ pub(crate) fn assemble(
     let mut used = vec![false; half.len()];
     let mut faces = Vec::with_capacity(n_faces);
     for (f, &(start, end)) in edge_nodes.iter().enumerate() {
+        let (start, end) = (c(start), c(end));
         let lo = first[f];
         let hi = first[f + 1];
         let hs = &half[lo..hi];
