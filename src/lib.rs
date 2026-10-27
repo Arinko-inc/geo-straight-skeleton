@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 #![doc = include_str!("../README.md")]
 
 mod engine;
@@ -37,23 +38,53 @@ pub struct Face {
     pub vertices: Vec<usize>,
 }
 
-/// Why a polygon was rejected.
+/// Why a polygon was rejected. Rings are numbered as given (0 = outer ring); point and edge
+/// indices count within the ring, closing point excluded (edge `k` starts at point `k`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SkeletonError {
     /// No rings were given.
     EmptyInput,
     /// A ring has fewer than three distinct points.
-    TooFewVertices { ring: usize },
+    TooFewVertices {
+        /// The ring.
+        ring: usize,
+    },
     /// A coordinate is NaN or infinite.
-    NonFinite { ring: usize, index: usize },
+    NonFinite {
+        /// The ring.
+        ring: usize,
+        /// The point within the ring.
+        index: usize,
+    },
     /// A ring has (almost) zero area: all its points are collinear.
-    ZeroArea { ring: usize },
-    /// Two edges intersect or touch. Edges are identified by their first point's index in the ring.
-    SelfIntersection { ring_a: usize, edge_a: usize, ring_b: usize, edge_b: usize },
+    ZeroArea {
+        /// The ring.
+        ring: usize,
+    },
+    /// Two edges cross, overlap, or touch away from a vertex shared by both rings; or two rings
+    /// that share a vertex overlap there.
+    SelfIntersection {
+        /// Ring of the first edge.
+        ring_a: usize,
+        /// First edge, by the index of its first point.
+        edge_a: usize,
+        /// Ring of the second edge.
+        ring_b: usize,
+        /// Second edge, by the index of its first point.
+        edge_b: usize,
+    },
     /// A hole is not inside the outer ring.
-    HoleOutside { ring: usize },
+    HoleOutside {
+        /// The hole.
+        ring: usize,
+    },
     /// A hole lies inside another hole.
-    NestedHole { ring: usize, outer: usize },
+    NestedHole {
+        /// The inner hole.
+        ring: usize,
+        /// The hole containing it.
+        outer: usize,
+    },
     /// The computation failed numerically (a bug: please report the input).
     Numerical,
 }

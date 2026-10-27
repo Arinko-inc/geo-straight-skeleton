@@ -138,7 +138,7 @@ fn orientation_closing_and_duplicates() {
         ring(&[(0., 2.), (4., 2.), (4., 2.), (4., 0.), (0., 0.), (0., 2.)]),
     ];
     for v in variants {
-        let sk = Skeleton::build(&[v.clone()]).unwrap();
+        let sk = Skeleton::build(std::slice::from_ref(&v)).unwrap();
         let n_in = v.len() - usize::from(v.first() == v.last());
         assert_eq!(sk.faces.len(), n_in, "{v:?}");
         let a = nodes(&sk);

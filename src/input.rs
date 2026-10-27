@@ -84,7 +84,7 @@ pub(crate) fn prepare(rings: &[Vec<[f64; 2]>]) -> Result<Prepared, SkeletonError
     }
     let center = [0.5 * (x0 + x1), 0.5 * (y0 + y1)];
     let scale = (x1 - x0).max(y1 - y0);
-    if !(scale > 0.0) || !scale.is_finite() {
+    if !scale.is_finite() || scale <= 0.0 {
         return Err(SkeletonError::ZeroArea { ring: 0 });
     }
     let inv = 1.0 / scale;

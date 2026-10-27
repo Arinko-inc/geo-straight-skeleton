@@ -251,15 +251,15 @@ impl Engine {
                 let pid = e.new_piece(eb + j, vb + j, vb + (j + 1) % n as u32);
                 debug_assert_eq!(pid, eb + j);
             }
-            for j in 0..n {
+            for (j, &p) in ring.iter().enumerate() {
                 let in_p = eb + ((j + n - 1) % n) as u32;
                 let out_p = eb + j as u32;
                 let d_in = e.lines[in_p as usize].d;
                 let d_out = e.lines[out_p as usize].d;
                 let sigma = ccw_angle(d_out, neg(d_in));
                 let id = e.verts.len() as u32;
-                e.nodes.push(Node { pos: ring[j], t: 0.0 });
-                e.push_vert(ring[j], 0.0, in_p, out_p, id, sigma);
+                e.nodes.push(Node { pos: p, t: 0.0 });
+                e.push_vert(p, 0.0, in_p, out_p, id, sigma);
             }
         }
         e
@@ -489,7 +489,7 @@ impl Engine {
         let th = t + dist0.max(0.0) / closing;
         // the three-line time below may differ from the trajectory by this much
         let slack = 1e-7 + 1e-3 * (th - t);
-        if !(th < limit + slack) {
+        if th.is_nan() || th >= limit + slack {
             return None;
         }
         let (vs, ve) = (&self.verts[pc.start as usize], &self.verts[pc.end as usize]);
@@ -757,8 +757,7 @@ impl Engine {
         let mut dead_pieces: Vec<u32> = Vec::new();
         let mut whole_cycles = false;
         let mut consistent = true;
-        for idx in 0..vs.len() {
-            let v = vs[idx];
+        for &v in &vs {
             if self.verts[v as usize].visit == st {
                 continue;
             }
