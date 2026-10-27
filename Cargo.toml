@@ -1,11 +1,12 @@
 [package]
 name = "geo-straight-skeleton"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Yukihiro Hemmi <y.hemmi@arinko.jp>"]
 description = "Straight skeleton of polygons with holes in f64, pure Rust: robust against simultaneous events, checked against CGAL"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/Arinko-inc/geo-straight-skeleton"
 readme = "README.md"
 keywords = ["straight-skeleton", "skeleton", "polygon", "geometry", "gis"]
 categories = ["algorithms", "science::geo", "mathematics", "graphics"]
