@@ -241,6 +241,29 @@ function road(nSeg, seed, segLen = 10, width = 3, curv = 0.08, opts = {}) {
   return ring;
 }
 
+// A strip of exactly constant width: both sides offset along the chord normals of a random
+// centreline, so the sides are nearly anti-parallel everywhere and collapse at once.
+function constStrip(segs, seed, segLen = 2, half = 1.5, curv = 0.03) {
+  const rnd = mulberry32(seed);
+  const c = [[0, 0]];
+  let ang = 0, dang = 0;
+  for (let i = 0; i < segs; i++) {
+    dang = 0.7 * dang + curv * (rnd() - 0.5);
+    ang += dang;
+    const [x, y] = c[c.length - 1];
+    c.push([x + segLen * Math.cos(ang), y + segLen * Math.sin(ang)]);
+  }
+  const left = [], right = [];
+  for (let i = 0; i < c.length; i++) {
+    const a = c[Math.max(i - 1, 0)], b = c[Math.min(i + 1, c.length - 1)];
+    const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy);
+    const n = [(-dy / l) * half, (dx / l) * half];
+    left.push([c[i][0] + n[0], c[i][1] + n[1]]);
+    right.push([c[i][0] - n[0], c[i][1] - n[1]]);
+  }
+  return [...right, ...left.reverse()];
+}
+
 function comb(teeth, toothW, gapW, toothH, baseH) {
   // base along x from 0..W, teeth pointing up
   const W = teeth * toothW + (teeth + 1) * gapW;
@@ -331,6 +354,12 @@ export function allCases() {
   add('road', 'road_near_points', [road(40, 5, 10, 3, 0.05, { nearPoints: 7 })], 'points closer than 0.1 m');
   add('road', 'road_spikes', [road(40, 6, 10, 3, 0.04, { spikes: 6 })], 'sharp spikes on one side');
   add('road', 'road_2m_200', [road(200, 7, 3, 2, 0.05, { widthJitter: 0.05 })]);
+
+  add('road', 'const_strip_50', [constStrip(24, 81, 2, 1.5, 0.03)], 'strip of exactly constant width (chord normals)');
+  add('road', 'const_strip_100', [constStrip(49, 82, 2, 1.5, 0.1)], 'strip of exactly constant width (chord normals)');
+  add('road', 'const_strip_200', [constStrip(99, 83, 2, 2.5, 0.03)], 'strip of exactly constant width (chord normals)');
+  add('road', 'const_strip_400', [constStrip(199, 84, 2, 1.0, 0.01)], 'strip of exactly constant width (chord normals)');
+  add('bigcoord', 'big_const_strip_300', [translate(constStrip(149, 85, 2, 1.5, 0.05), -30000, 120000)], 'constant-width strip far from the origin');
 
   // --- holes ---
   add('holes', 'hole_center', [rect(0, 0, 10, 10), [[3, 3], [3, 7], [7, 7], [7, 3]]], 'spec table #6');
