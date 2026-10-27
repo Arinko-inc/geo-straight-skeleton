@@ -84,8 +84,11 @@ pub fn load_case(path: &Path) -> Case {
 }
 
 pub fn load_corpus() -> Vec<Case> {
-    let mut paths: Vec<PathBuf> = std::fs::read_dir(corpus_dir())
-        .expect("corpus dir")
+    // the corpus lives in the repository only, not in the published package
+    let Ok(dir) = std::fs::read_dir(corpus_dir()) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<PathBuf> = dir
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false))
         .collect();
