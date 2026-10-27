@@ -1,18 +1,9 @@
 //! Regressions found by review (2026-10-27). Each input once produced a wrong `Ok`.
 
-use geo_straight_skeleton::{Skeleton, SkeletonError};
+mod common;
 
-fn ring_area(r: &[[f64; 2]]) -> f64 {
-    let o = r[0];
-    let n = r.len();
-    (0..n)
-        .map(|i| {
-            let (p, q) = (r[i], r[(i + 1) % n]);
-            (p[0] - o[0]) * (q[1] - o[1]) - (q[0] - o[0]) * (p[1] - o[1])
-        })
-        .sum::<f64>()
-        * 0.5
-}
+use common::area as ring_area;
+use geo_straight_skeleton::{Skeleton, SkeletonError};
 
 /// A very sharp but positive input angle (1e-11 rad) must not be taken for a zero-width overlap:
 /// the triangle has an incentre at about (1e12 - 5, 5) with time 5. If it cannot be computed,
