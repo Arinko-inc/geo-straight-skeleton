@@ -14,8 +14,10 @@ All notable changes to this crate are documented here. The format follows
 - Input handling: either ring orientation, optional closing point, consecutive duplicates,
   collinear points (each keeps its face), rings touching at a shared vertex.
 - `Skeleton::arcs`: interior arcs as vertex index pairs.
-- `Skeleton::offset`: the inward offset polygon at a given distance.
-- Feature `geo-types`: `Skeleton::from_polygon` and `Skeleton::arcs_multi_line_string`.
+- `Skeleton::offset`: the inward offset polygon at a given distance, as a `Result` (a contour
+  that fails to close is an error, not a ring).
+- Feature `geo-types` (geo-types 0.7.8 or later): `Skeleton::from_polygon` and
+  `Skeleton::arcs_multi_line_string`.
 - `examples/svg.rs`: draw a skeleton and its offsets as SVG.
 - Tests against CGAL's `Straight_skeleton_2` on 153 inputs (150 compared, all matching), property
   tests on random polygons, and timing tests.

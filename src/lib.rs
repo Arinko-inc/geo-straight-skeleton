@@ -23,6 +23,9 @@ pub struct Skeleton {
     /// One face per input edge: `faces[k]` belongs to the edge that starts at input point `k`
     /// (and ends at the next point of the same ring).
     pub faces: Vec<Face>,
+    /// For every vertex, the representative of the input points treated as one point (duplicates,
+    /// rings touching at a vertex); skeleton nodes represent themselves.
+    same: Vec<usize>,
 }
 
 /// The face swept by one input edge.
@@ -147,6 +150,8 @@ impl Skeleton {
             base += n;
         }
         let n_input_nodes = base as usize;
+        // the face areas must add up to the polygon: a cheap guard against a wrong Ok
+        let polygon_area: f64 = prep.rings.iter().map(|r| geom::ring_area2(r)).sum::<f64>() * 0.5;
         let mut canon: Vec<u32> = (0..n_input_nodes as u32).collect();
         for g in &prep.touch_groups {
             for &v in g {
@@ -159,6 +164,19 @@ impl Skeleton {
             }
             SkeletonError::Numerical
         })?;
+        let faces_area: f64 = node_faces
+            .iter()
+            .map(|f| {
+                let pts: Vec<geom::V2> = f.iter().map(|&n| out.nodes[n as usize].pos).collect();
+                geom::ring_area2(&pts) * 0.5
+            })
+            .sum();
+        if !faces_area.is_finite() || (faces_area - polygon_area).abs() > 1e-7 * polygon_area.abs() + 1e-14 {
+            if cfg!(debug_assertions) && std::env::var_os("SK_TRACE").is_some() {
+                eprintln!("faces cover {faces_area}, polygon {polygon_area}");
+            }
+            return Err(SkeletonError::Numerical);
+        }
 
         let n_pts = prep.points.len();
         let mut vertices: Vec<[f64; 3]> = prep.points.iter().map(|p| [p[0], p[1], 0.0]).collect();
@@ -196,7 +214,41 @@ impl Skeleton {
             faces_out[orig] = Some(Face { edge: (s, e), vertices: vec![e, s] });
         }
         let faces = faces_out.into_iter().map(|f| f.ok_or(SkeletonError::Numerical)).collect::<Result<_, _>>()?;
-        Ok(Skeleton { vertices, faces })
+        // identity of input points: duplicate runs and vertices where rings touch are one point
+        let mut parent: Vec<usize> = (0..vertices.len()).collect();
+        fn find(p: &mut [usize], mut x: usize) -> usize {
+            while p[x] != x {
+                p[x] = p[p[x]];
+                x = p[x];
+            }
+            x
+        }
+        let union = |p: &mut Vec<usize>, a: usize, b: usize| {
+            let (ra, rb) = (find(p, a), find(p, b));
+            if ra != rb {
+                p[ra.max(rb)] = ra.min(rb);
+            }
+        };
+        for &(_, s, e) in &prep.zero_edges {
+            union(&mut parent, s, e);
+        }
+        let mut base = 0usize;
+        for ring in &prep.rings {
+            let n = ring.len();
+            for j in 0..n {
+                // computed vertex base + j ends edge j - 1 and starts edge j
+                let prev = comp_edges[base + (j + n - 1) % n].end;
+                union(&mut parent, prev, comp_edges[base + j].start);
+            }
+            base += n;
+        }
+        for g in &prep.touch_groups {
+            for &m in &g[1..] {
+                union(&mut parent, comp_edges[g[0]].start, comp_edges[m].start);
+            }
+        }
+        let same: Vec<usize> = (0..vertices.len()).map(|i| find(&mut parent, i)).collect();
+        Ok(Skeleton { vertices, faces, same })
     }
 
     /// The interior arcs of the skeleton: every edge of a face that has at least one endpoint with

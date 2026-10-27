@@ -114,7 +114,7 @@ fn main() {
         if let Ok(sk) = Skeleton::build(&rings) {
             for &dist in &offsets {
                 let mut d = String::new();
-                for r in sk.offset(dist) {
+                for r in sk.offset(dist).unwrap_or_default() {
                     d.push_str(&path_of(&mut r.into_iter()));
                 }
                 let _ = writeln!(out, r##"<path d="{d}" fill="none" stroke="#c05621" stroke-width="1" stroke-dasharray="4 3"/>"##);

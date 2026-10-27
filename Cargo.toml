@@ -26,7 +26,7 @@ include = [
 geo-types = ["dep:geo-types"]
 
 [dependencies]
-geo-types = { version = "0.7", optional = true }
+geo-types = { version = "0.7.8", optional = true }
 
 [dev-dependencies]
 serde_json = { version = "1", features = ["float_roundtrip"] }

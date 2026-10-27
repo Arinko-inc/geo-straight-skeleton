@@ -43,7 +43,7 @@ assert_eq!(sk.faces[0].edge, (0, 1));
 // interior arcs as vertex index pairs
 assert_eq!(sk.arcs().len(), 12);
 // the polygon shrunk by 1: an outer ring and a hole ring
-assert_eq!(sk.offset(1.0).len(), 2);
+assert_eq!(sk.offset(1.0).unwrap().len(), 2);
 ```
 
 With the `geo-types` feature:
@@ -92,7 +92,12 @@ Where input points coincide (rings touching, duplicates), faces use their own ed
 so an arc can appear once from each of the coincident points.
 
 `Skeleton::offset(d)` returns the polygon shrunk by `d`: the cross-section of the roof at height
-`d`, as rings without closing point (counter-clockwise outer rings, clockwise holes).
+`d`, as rings without closing point (counter-clockwise outer rings, clockwise holes). Input points
+that were treated as one point (duplicates, rings touching at a vertex) stay one point there.
+
+A sanity check guards every result: the faces must add up to the polygon's area, otherwise `build`
+returns `SkeletonError::Numerical` rather than a wrong skeleton. Very sharp input corners (down to
+the input tolerance) are simulated like any other vertex, not taken for zero-width overlaps.
 
 ## Design
 

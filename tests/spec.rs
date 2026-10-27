@@ -278,23 +278,23 @@ fn ring_area(r: &[[f64; 2]]) -> f64 {
 #[test]
 fn offsets() {
     let rect = Skeleton::build(&[ring(&[(0., 0.), (4., 0.), (4., 2.), (0., 2.)])]).unwrap();
-    let r = rect.offset(0.5);
+    let r = rect.offset(0.5).unwrap();
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].len(), 4);
     assert!((ring_area(&r[0]) - 3.0).abs() < 1e-9);
     for p in &r[0] {
         assert!(((p[0] - 0.5).abs() < 1e-9 || (p[0] - 3.5).abs() < 1e-9) && ((p[1] - 0.5).abs() < 1e-9 || (p[1] - 1.5).abs() < 1e-9));
     }
-    assert!(rect.offset(1.0).is_empty());
-    assert!(rect.offset(2.0).is_empty());
-    let back = rect.offset(0.0);
+    assert!(rect.offset(1.0).unwrap().is_empty());
+    assert!(rect.offset(2.0).unwrap().is_empty());
+    let back = rect.offset(0.0).unwrap();
     assert_eq!(back.len(), 1);
     assert!((ring_area(&back[0]) - 8.0).abs() < 1e-9);
 
     let outer = ring(&[(0., 0.), (10., 0.), (10., 10.), (0., 10.)]);
     let hole = ring(&[(3., 3.), (3., 7.), (7., 7.), (7., 3.)]);
     let sk = Skeleton::build(&[outer, hole]).unwrap();
-    let r = sk.offset(1.0);
+    let r = sk.offset(1.0).unwrap();
     assert_eq!(r.len(), 2);
     let mut areas: Vec<f64> = r.iter().map(|x| ring_area(x)).collect();
     areas.sort_by(f64::total_cmp);
@@ -302,7 +302,7 @@ fn offsets() {
 
     // the U splits into two legs
     let u = Skeleton::build(&[ring(&[(0., 0.), (6., 0.), (6., 5.), (4., 5.), (4., 2.), (2., 2.), (2., 5.), (0., 5.)])]).unwrap();
-    assert_eq!(u.offset(0.5).len(), 1);
+    assert_eq!(u.offset(0.5).unwrap().len(), 1);
     // at 0.9 the bottom (height 2) still connects; legs are 2 wide
-    assert_eq!(u.offset(0.9).len(), 1);
+    assert_eq!(u.offset(0.9).unwrap().len(), 1);
 }

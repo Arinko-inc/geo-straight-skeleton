@@ -259,7 +259,7 @@ impl Engine {
                 let sigma = ccw_angle(d_out, neg(d_in));
                 let id = e.verts.len() as u32;
                 e.nodes.push(Node { pos: p, t: 0.0 });
-                e.push_vert(p, 0.0, in_p, out_p, id, sigma);
+                e.push_vert(p, 0.0, in_p, out_p, id, sigma, false);
             }
         }
         e
@@ -283,15 +283,19 @@ impl Engine {
         id
     }
 
-    fn push_vert(&mut self, pos: V2, t: f64, in_p: u32, out_p: u32, node: u32, sigma: f64) -> u32 {
+    /// `overlap`: the vertex joins two pieces that may lie on top of each other (it comes out of an
+    /// event); a sector below `EPS_ANG` then means zero width. An input vertex is never zero-width,
+    /// however sharp: it moves (fast) like any other.
+    #[allow(clippy::too_many_arguments)]
+    fn push_vert(&mut self, pos: V2, t: f64, in_p: u32, out_p: u32, node: u32, sigma: f64, overlap: bool) -> u32 {
         let id = self.verts.len() as u32;
         let sigma = sigma.clamp(0.0, TAU);
-        let zip = sigma < EPS_ANG;
+        let zip = overlap && sigma < EPS_ANG;
         let reflex = !zip && sigma > PI + EPS_REFLEX;
         let vel = if zip {
             [0.0, 0.0]
         } else {
-            let s = sigma.min(TAU - EPS_ANG);
+            let s = sigma.clamp(f64::MIN_POSITIVE.sqrt(), TAU - EPS_ANG);
             let d_out = self.lines[self.pieces[out_p as usize].line as usize].d;
             let bis = rot(d_out, 0.5 * s);
             mul(bis, 1.0 / (0.5 * s).sin())
@@ -1031,7 +1035,7 @@ impl Engine {
             } else {
                 geo
             };
-            let nv = self.push_vert(p, t, in_p, out_p, node, sigma);
+            let nv = self.push_vert(p, t, in_p, out_p, node, sigma, true);
             if trace() {
                 eprintln!(
                     "   new v{nv}: in line {} out line {} sigma {sigma:.6}",

@@ -120,7 +120,14 @@ fn check_offsets(rings: &[Vec<P2>], sk: &Skeleton) -> Vec<String> {
     let mut problems = Vec::new();
     for frac in [0.013, 0.1, 0.37, 0.5, 0.77, 0.99] {
         let d = tmax * frac;
-        let got: f64 = sk.offset(d).iter().map(|r| area(r)).sum();
+        let rings = match sk.offset(d) {
+            Ok(r) => r,
+            Err(e) => {
+                problems.push(format!("offset {d}: {e}"));
+                continue;
+            }
+        };
+        let got: f64 = rings.iter().map(|r| area(r)).sum();
         let want = superlevel_area(sk, d);
         if (got - want).abs() > 1e-9 * scale * scale {
             problems.push(format!("offset {d}: rings have area {got}, faces above it {want}"));
