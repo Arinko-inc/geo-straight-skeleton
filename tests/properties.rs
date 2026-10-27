@@ -346,7 +346,6 @@ proptest! {
     }
 
     #[test]
-    #[ignore = "open issue: exactly constant-width strips, see tests/known-diffs.md"]
     fn constant_width_strips(seed in any::<u64>(), segs in 2usize..400, half in prop::sample::select(vec![1.0, 1.5, 2.5]),
                              curv in prop::sample::select(vec![0.0, 0.01, 0.03, 0.1]), far in any::<bool>()) {
         let r = constant_strip(seed, segs, 2.0, half, curv);

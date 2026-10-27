@@ -134,6 +134,13 @@ struct Plan {
     consistent: bool,
 }
 
+impl Plan {
+    /// Every pass is a lone vertex joined back to itself: nothing to do.
+    fn is_noop(&self) -> bool {
+        !self.whole_cycles && self.pairs.iter().all(|&(a, b, _)| a == b && self.passes[a].single)
+    }
+}
+
 struct Ray {
     ang: f64,
     is_in: bool,
@@ -804,6 +811,21 @@ impl Engine {
             }
             let out_p = self.verts[c as usize].out_p;
             let sigma = PI - tsum;
+            // The chain plus the one vertex at the far end of both its pieces is the whole cycle:
+            // a polygon whose lines all meet here, so it vanishes here, wherever rounding put that
+            // vertex (a sliver tip can be off by a lot). Exception: two exactly anti-parallel
+            // pieces lying on top of each other, a zero-width strip that is zipped instead.
+            let a0 = self.pieces[in_p as usize].start;
+            if a0 == self.pieces[out_p as usize].end && sigma.abs() > EPS_ANG {
+                let av = &mut self.verts[a0 as usize];
+                av.mark = st;
+                av.visit = st;
+                dead_verts.push(a0);
+                dead_pieces.push(in_p);
+                dead_pieces.push(out_p);
+                whole_cycles = true;
+                continue;
+            }
             // a chain that turns by more than half a turn cannot collapse on its own: something
             // nearby is missing from the event
             if !(-EPS_ANG..=TAU + EPS_ANG).contains(&sigma) {
@@ -872,6 +894,29 @@ impl Engine {
             if !lone_in.is_empty() {
                 consistent = false;
             }
+            // Events are collisions. If the rays say every pass just separates (nothing would
+            // change), the passes overlap by a rounding error: pair them as colliding instead,
+            // ordered by the middle of their exterior gaps.
+            if !whole_cycles
+                && passes.len() >= 2
+                && pairs.iter().all(|&(a, b, _)| a == b && passes[a].single)
+            {
+                let mut order: Vec<(f64, usize)> = passes
+                    .iter()
+                    .enumerate()
+                    .map(|(k, ps)| {
+                        let alpha = angle(neg(self.line_of(ps.in_p).d));
+                        let mut mid = alpha + 0.5 * (TAU - ps.sigma);
+                        if mid >= TAU {
+                            mid -= TAU;
+                        }
+                        (mid, k)
+                    })
+                    .collect();
+                order.sort_by(|a, b| a.0.total_cmp(&b.0));
+                let m = order.len();
+                pairs = (0..m).map(|k| (order[(k + 1) % m].1, order[k].1, false)).collect();
+            }
             // In a collision every ray lies inside the other passes' sectors, so the sector of a
             // new vertex joining two different passes fits inside both of them.
             for &(ia, ob, tied) in &pairs {
@@ -894,20 +939,38 @@ impl Engine {
     /// the collection radius is then widened tenfold, up to `EPS_P_MAX`.
     fn surgery(&mut self, t: f64, p: V2, forced: &[u32], forced_piece: u32) -> bool {
         let mut radius = EPS_P;
+        let mut prev: Option<Plan> = None;
         let plan = loop {
             let Some(plan) = self.plan(t, p, forced, forced_piece, radius) else {
                 return false;
             };
+            // widening until nothing changes does not resolve an inconsistency: keep the last plan
+            // that does something (its inverted slivers are closed below)
+            if plan.is_noop() {
+                if let Some(pp) = prev {
+                    break pp;
+                }
+            }
+            if trace() {
+                eprintln!(
+                    "  plan r={radius:e} consistent={} verts={:?} pieces={:?} pairs={:?} sigmas={:?}",
+                    plan.consistent,
+                    plan.vs,
+                    plan.es,
+                    plan.pairs,
+                    plan.passes.iter().map(|p| p.sigma).collect::<Vec<_>>()
+                );
+            }
             if plan.consistent || radius >= EPS_P_MAX {
                 break plan;
             }
             radius *= 10.0;
+            prev = Some(plan);
         };
-        let Plan { st, vs, es, mut passes, pairs, dead_verts, dead_pieces, whole_cycles, .. } = plan;
-        // nothing to do if every pass is a lone vertex that is joined back to itself
-        if !whole_cycles && pairs.iter().all(|&(a, b, _)| a == b && passes[a].single) {
+        if plan.is_noop() {
             return false;
         }
+        let Plan { st, vs, es, mut passes, pairs, dead_verts, dead_pieces, .. } = plan;
         let node = if self.node_override != NONE { self.node_override } else { self.node_at(p, t) };
         if trace() {
             eprintln!(
@@ -1024,7 +1087,11 @@ impl Engine {
         let la = dot(u, sub(pa, p));
         let lb = dot(u, sub(pb, p));
         let (q, forced): (V2, [u32; 3]) = if a0 == b1 {
-            (pa, [z, a0, NONE])
+            // A two-vertex cycle. If the other vertex is zero-width too, the two pieces lie on top
+            // of each other and the cycle is a segment: close it at the far end. Otherwise both
+            // vertices sit where the same two lines cross, which is here; the other one is a
+            // sliver tip whose extrapolated position is not trustworthy.
+            if self.verts[a0 as usize].zip { (pa, [z, a0, NONE]) } else { (p, [z, a0, NONE]) }
         } else if (la - lb).abs() <= EPS_P {
             (mul(add(pa, pb), 0.5), [z, a0, b1])
         } else if la > lb {
@@ -1107,7 +1174,20 @@ impl Engine {
                     self.reflex_best[ri as usize] = f64::INFINITY;
                 }
                 let (q, _) = self.split_point(r, line, t);
-                let changed = match self.find_on_line(line, r, q, t) {
+                let hit = self.find_on_line(line, r, q, t);
+                if trace() {
+                    eprintln!(
+                        "  split v{r} on line {line} at ({:.12},{:.12}): {}",
+                        q[0],
+                        q[1],
+                        match hit {
+                            Hit::Interior(p) => format!("interior of piece {p}"),
+                            Hit::Vertex(v) => format!("vertex v{v}"),
+                            Hit::Nothing => "nothing".to_string(),
+                        }
+                    );
+                }
+                let changed = match hit {
                     Hit::Interior(pid) => self.surgery(t, q, &[r], pid),
                     Hit::Vertex(v) => self.surgery(t, q, &[r, v], NONE),
                     Hit::Nothing => false,

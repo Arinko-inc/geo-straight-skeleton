@@ -281,15 +281,15 @@ fn offsets() {
     let r = rect.offset(0.5);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].len(), 4);
-    assert!((ring_area(&r[0]) - 3.0).abs() < 1e-12);
+    assert!((ring_area(&r[0]) - 3.0).abs() < 1e-9);
     for p in &r[0] {
-        assert!(((p[0] - 0.5).abs() < 1e-12 || (p[0] - 3.5).abs() < 1e-12) && ((p[1] - 0.5).abs() < 1e-12 || (p[1] - 1.5).abs() < 1e-12));
+        assert!(((p[0] - 0.5).abs() < 1e-9 || (p[0] - 3.5).abs() < 1e-9) && ((p[1] - 0.5).abs() < 1e-9 || (p[1] - 1.5).abs() < 1e-9));
     }
     assert!(rect.offset(1.0).is_empty());
     assert!(rect.offset(2.0).is_empty());
     let back = rect.offset(0.0);
     assert_eq!(back.len(), 1);
-    assert!((ring_area(&back[0]) - 8.0).abs() < 1e-12);
+    assert!((ring_area(&back[0]) - 8.0).abs() < 1e-9);
 
     let outer = ring(&[(0., 0.), (10., 0.), (10., 10.), (0., 10.)]);
     let hole = ring(&[(3., 3.), (3., 7.), (7., 7.), (7., 3.)]);

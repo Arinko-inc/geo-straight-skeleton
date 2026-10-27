@@ -35,7 +35,9 @@ impl Skeleton {
         if !distance.is_finite() {
             return Vec::new();
         }
-        let d = distance.max(f64::MIN_POSITIVE);
+        // A level exactly at the time of a skeleton vertex (common with axis-parallel input) makes
+        // rings touch there; cutting a relative 1e-12 lower separates them cleanly.
+        let d = (distance * (1.0 - 1e-12)).max(f64::MIN_POSITIVE);
         // the same position can carry several input indices (rings touching, duplicates)
         let mut by_pos: HashMap<(u64, u64), usize> = HashMap::new();
         let canon: Vec<usize> = self
@@ -68,9 +70,12 @@ impl Skeleton {
                 if au == aw {
                     continue;
                 }
-                let (pu, pw) = (self.vertices[u], self.vertices[w]);
-                let f = ((d - pu[2]) / (pw[2] - pu[2])).clamp(0.0, 1.0);
-                let point = [pu[0] + (pw[0] - pu[0]) * f, pu[1] + (pw[1] - pu[1]) * f];
+                // interpolate from the lower index, so the face on the other side of this arc
+                // computes the identical point
+                let (lo, hi) = if u < w { (u, w) } else { (w, u) };
+                let (pl, ph) = (self.vertices[lo], self.vertices[hi]);
+                let f = ((d - pl[2]) / (ph[2] - pl[2])).clamp(0.0, 1.0);
+                let point = [pl[0] + (ph[0] - pl[0]) * f, pl[1] + (ph[1] - pl[1]) * f];
                 let along = (point[0] - s[0]) * dir[0] + (point[1] - s[1]) * dir[1];
                 cs.push(Crossing { a: canon[u], b: canon[w], point, along, up: aw });
             }
@@ -94,6 +99,15 @@ impl Skeleton {
         }
         let mut used = vec![false; segments.len()];
         let mut rings = Vec::new();
+        // rings thinner than rounding (a cut at the very top of a ridge) are dropped
+        let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for v in &self.vertices {
+            x0 = x0.min(v[0]);
+            y0 = y0.min(v[1]);
+            x1 = x1.max(v[0]);
+            y1 = y1.max(v[1]);
+        }
+        let min_area2 = 2e-10 * ((x1 - x0).powi(2) + (y1 - y0).powi(2));
         for k0 in 0..segments.len() {
             if used[k0] {
                 continue;
@@ -119,7 +133,7 @@ impl Skeleton {
             while ring.len() > 1 && ring.first() == ring.last() {
                 ring.pop();
             }
-            if ring.len() >= 3 && area2(&ring).abs() > 0.0 {
+            if ring.len() >= 3 && area2(&ring).abs() > min_area2 {
                 rings.push(ring);
             }
         }

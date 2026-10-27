@@ -29,7 +29,7 @@ geo-types = ["dep:geo-types"]
 geo-types = { version = "0.7", optional = true }
 
 [dev-dependencies]
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
 proptest = "1"
 
 [package.metadata.docs.rs]
